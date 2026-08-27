@@ -433,18 +433,52 @@ public class FlowController extends BaseController {
         pauseService(forwardList, name);
     }
 
+    /**
+     * 批量暂停转发。
+     *
+     * name 参数保留只为不动上层调用签名,【已不再用于停服务】——
+     * 服务名是 forwardId_userId_userTunnelId,每条转发各不相同,而这里是对一批
+     * 转发循环。以前整批都用调用方传进来的那一个 name,结果只有那一条真在 gost 上
+     * 停掉,其余的仅仅把数据库 status 改成 0、实际还在跑。
+     * 表现就是「账号到期了,里面的线路照样能用」,而单独停某条线路反倒有效
+     * (那条路径 pauseLineForwards 一直是按每条转发算名字的)。
+     */
     public void pauseService(List<Forward> forwardList, String name) {
         for (Forward forward : forwardList) {
             Tunnel tunnel = tunnelService.getById(forward.getTunnelId());
             if (tunnel != null){
-                GostUtil.PauseService(tunnel.getInNodeId(), name);
+                String svc = serviceNameOf(forward);
+                GostUtil.PauseService(tunnel.getInNodeId(), svc);
                 if (tunnel.getType() == 2){
-                    GostUtil.PauseRemoteService(tunnel.getOutNodeId(), name);
+                    GostUtil.PauseRemoteService(tunnel.getOutNodeId(), svc);
                 }
             }
             forward.setStatus(0);
             forwardService.updateById(forward);
         }
+    }
+
+    /**
+     * 这条转发在 gost 上的服务名。
+     * 协议/中转的转发没有 user_tunnel,userTunnelId 恒为 0;老隧道业务要按
+     * (userId, tunnelId) 反查 UserTunnel 拿 id —— Forward 表本身不存这个字段。
+     */
+    private String serviceNameOf(Forward forward) {
+        int userTunnelId = 0;
+        try {
+            UserTunnel ut = userTunnelService.getOne(new QueryWrapper<UserTunnel>()
+                    .eq("user_id", forward.getUserId())
+                    .eq("tunnel_id", forward.getTunnelId())
+                    .last("limit 1"));
+            if (ut != null && ut.getId() != null) {
+                userTunnelId = ut.getId();
+            }
+        } catch (Exception e) {
+            // 查不到就按 0 处理:协议/中转的转发本来就没有 user_tunnel,
+            // 这里失败也不能让整批暂停中断。
+            log.warn("查 user_tunnel 失败,转发[{}]按 userTunnelId=0 处理: {}", forward.getId(), e.getMessage());
+        }
+        return forward.getId() + "_" + forward.getUserId() + "_" + userTunnelId;
     }
 
     private FlowDto filterFlowData(FlowDto flowDto, Forward forward, int flowType) {
