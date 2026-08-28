@@ -333,6 +333,13 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         // 0. 查重:已给这个用户分过这个协议 → 直接返回现有链接 + 订阅,不重复建(避免重复占端口/转发)
         InboundUser existed = inboundUserMapper.selectOne(new QueryWrapper<InboundUser>()
                 .eq("inbound_id", in.getId()).eq("user_id", user.getId()).last("limit 1"));
+        // 【自愈】同 assignAllToUser:记录还在但转发没了 → 清掉孤儿,当没分配过重新走一遍。
+        // 不然这里会直接 return 一个空链接,而且每次都返回空,用户无从下手。
+        if (existed != null && (existed.getGostForwardId() == null
+                || forwardMapper.selectById(existed.getGostForwardId()) == null)) {
+            inboundUserMapper.deleteById(existed.getId());
+            existed = null;
+        }
         if (existed != null) {
             Forward f = existed.getGostForwardId() != null ? forwardMapper.selectById(existed.getGostForwardId()) : null;
             JSONObject result = new JSONObject();
@@ -470,6 +477,15 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
             InboundUser existed = inboundUserMapper.selectOne(new QueryWrapper<InboundUser>()
                     .eq("inbound_id", in.getId()).eq("user_id", user.getId()).last("limit 1"));
+            // 【自愈】分配记录还在,但它指向的转发已经不在了(转发所在的隧道被整条删掉时就会这样)。
+            // 这种状态下链接是空的、订阅里一条都没有,而下面那段"续费"只会去 update 一条
+            // 不存在的记录 —— 点多少次「一键全协议」都修不回来。先把孤儿记录清掉,
+            // 让它走下面的正常分配路径重建(会重新建转发、重新出链接)。
+            if (existed != null && (existed.getGostForwardId() == null
+                    || forwardMapper.selectById(existed.getGostForwardId()) == null)) {
+                inboundUserMapper.deleteById(existed.getId());
+                existed = null;
+            }
             if (existed != null) {
                 skipped++;
                 // 已分过这个协议 → 不能只是跳过。重新分配 = 续费 / 改配置,
@@ -1355,13 +1371,22 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     /** 确保节点有一条端口转发隧道(入口机=该节点),没有则建 */
     private Tunnel ensurePortForwardTunnel(Long nodeId) {
+        String name = "inbound-tunnel-node" + nodeId;
+        // 【为什么要按名字认,而不是"这台机上随便哪条端口转发隧道"】
+        // 原来的条件是 in_node_id=nodeId AND type=1 limit 1 —— 只要这台机上有任何一条端口转发
+        // 隧道就拿来用,包括用户自己手建的那条。于是协议/车友的转发全被塞进用户的隧道里。
+        // 用户哪天把那条隧道连带转发一起删了,这些转发跟着没,inbound_user 就变成
+        // 指向不存在转发的孤儿:链接空掉、订阅空掉,而「一键全协议」看到记录还在只会跳过 ——
+        // 表现就是"协议都在,但一条链接都出不来",而且怎么点都修不回来。
+        // 三月就是这么踩的:隧道页那条手建的「香港端口转发」里躺着 12 条协议/车友转发。
         Tunnel tunnel = tunnelMapper.selectOne(new QueryWrapper<Tunnel>()
-                .eq("in_node_id", nodeId).eq("type", TUNNEL_TYPE_PORT_FORWARD).last("limit 1"));
+                .eq("in_node_id", nodeId).eq("type", TUNNEL_TYPE_PORT_FORWARD)
+                .eq("name", name).last("limit 1"));
         if (tunnel != null) {
             return tunnel;
         }
         TunnelDto tdto = new TunnelDto();
-        tdto.setName("inbound-tunnel-node" + nodeId);
+        tdto.setName(name);
         tdto.setInNodeId(nodeId);
         tdto.setType(TUNNEL_TYPE_PORT_FORWARD);
         tdto.setFlow(1);
