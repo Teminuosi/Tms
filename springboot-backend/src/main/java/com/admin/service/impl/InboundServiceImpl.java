@@ -695,15 +695,23 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         // 链接是分配时客户端算好推上来的(见 ForwardServiceImpl.setForwardClientLink 的注释),
         // 这里原样吐出;没推过链接的(车主自己的转发、或目标是裸 host:port 拼不出链接的)自然跳过。
         // 暂停的转发不出现,和线路停用同样的道理 —— 留着只会让人连不上还不知道为什么。
-        for (Forward fwd : forwardMapper.selectList(new QueryWrapper<Forward>()
-                .eq("user_id", u.getId().intValue()).isNotNull("client_link"))) {
-            if (fwd.getStatus() != null && fwd.getStatus() != 1) {
-                continue;
+        // 【为什么要 try 起来】client_link 是 SchemaMigration 补的列,而那个迁移
+        // 失败时只记日志、不抛(设计如此:不能因为迁移失败让面板起不来)。
+        // 万一这列没建成,这里的 isNotNull 会抛 Unknown column ——
+        // 整条聚合订阅跟着崩,协议节点一并没了。为了几条转发让车友全断,不划算。
+        try {
+            for (Forward fwd : forwardMapper.selectList(new QueryWrapper<Forward>()
+                    .eq("user_id", u.getId().intValue()).isNotNull("client_link"))) {
+                if (fwd.getStatus() != null && fwd.getStatus() != 1) {
+                    continue;
+                }
+                String cl = fwd.getClientLink();
+                if (cl != null && !cl.trim().isEmpty()) {
+                    links.add(cl.trim());
+                }
             }
-            String cl = fwd.getClientLink();
-            if (cl != null && !cl.trim().isEmpty()) {
-                links.add(cl.trim());
-            }
+        } catch (Exception e) {
+            log.warn("聚合订阅取转发链接失败(client_link 列可能没建成),本次只输出协议节点: " + e.getMessage());
         }
         String joined = String.join("\n", links);
         return java.util.Base64.getEncoder()
