@@ -40,6 +40,13 @@ public class SchemaMigration implements ApplicationRunner {
         // 「全部线路」聚合订阅 token:一条链接包含该车友所有未停用线路的节点
         addColumnIfMissing("user", "all_sub_token",
                 "ALTER TABLE `user` ADD COLUMN `all_sub_token` VARCHAR(64) NULL COMMENT '全部线路聚合订阅token'");
+
+        // 分给车友的转发要能进订阅,面板就得持有一条可直接导入客户端的链接。
+        // 落地的账号密码本来只存在车主本机(gost 只搬字节,凭据不上传)——
+        // 这是三月明确权衡后选的:用"凭据落在面板 DB"换"车友一条 URL、增删自动同步"。
+        // 只存分配给车友的那些;车主自己的转发不写这一列。
+        addColumnIfMissing("forward", "client_link",
+                "ALTER TABLE `forward` ADD COLUMN `client_link` VARCHAR(1024) NULL COMMENT '给车友的客户端链接(进聚合订阅用)'");
     }
 
     /** 列不存在才执行 ddl;任何异常都吞掉(只记日志),不能因为迁移失败导致面板起不来 */

@@ -98,4 +98,7 @@ public interface ForwardService extends IService<Forward> {
      * 取消分配 = 删掉那条,走现成的 deleteForward。
      */
     R assignForwardToUser(Long forwardId, Integer userId, Integer speedId, Long expTime);
+
+    /** 写入/清空某条转发给车友的客户端链接(进聚合订阅用);link 传空即清除 */
+    R setForwardClientLink(Long forwardId, String link);
 }

@@ -689,6 +689,22 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 links.add(link);
             }
         }
+        // 【转发】分给该车友的转发也进这条聚合订阅。
+        // 为什么只在聚合订阅里出现:转发不属于任何一条"线路"(线路 = 机器 × 落地组),
+        // 塞进某条线路订阅要么找不到归属、要么在多条里重复。
+        // 链接是分配时客户端算好推上来的(见 ForwardServiceImpl.setForwardClientLink 的注释),
+        // 这里原样吐出;没推过链接的(车主自己的转发、或目标是裸 host:port 拼不出链接的)自然跳过。
+        // 暂停的转发不出现,和线路停用同样的道理 —— 留着只会让人连不上还不知道为什么。
+        for (Forward fwd : forwardMapper.selectList(new QueryWrapper<Forward>()
+                .eq("user_id", u.getId().intValue()).isNotNull("client_link"))) {
+            if (fwd.getStatus() != null && fwd.getStatus() != 1) {
+                continue;
+            }
+            String cl = fwd.getClientLink();
+            if (cl != null && !cl.trim().isEmpty()) {
+                links.add(cl.trim());
+            }
+        }
         String joined = String.join("\n", links);
         return java.util.Base64.getEncoder()
                 .encodeToString(joined.getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -1021,11 +1037,12 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         // 前端做了两种格式的兼容,老前端配新后端也不会白屏。
         JSONObject result = new JSONObject();
         result.put("lines", lines);
-        if (!lines.isEmpty()) {
-            User u = userMapper.selectById(userId);
-            if (u != null) {
-                result.put("allSubToken", ensureAllSubToken(u));
-            }
+        // 【为什么不再要求 lines 非空】原来只有存在协议线路时才发聚合 token。
+        // 现在转发也进聚合订阅了 —— 一个只分到转发、没分协议的车友照样需要这条 URL,
+        // 拿不到就只能一条条发链接,等于白做。
+        User u = userMapper.selectById(userId);
+        if (u != null) {
+            result.put("allSubToken", ensureAllSubToken(u));
         }
         return R.ok(result);
     }

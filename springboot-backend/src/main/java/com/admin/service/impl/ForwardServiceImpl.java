@@ -283,6 +283,34 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         return lastErr != null ? lastErr : R.err("没有可用端口。" + suggestPortHint(tunnel));
     }
 
+    /**
+     * 写入/清空某条转发给车友的客户端链接。
+     *
+     * 【为什么由客户端算好再推上来,而不是面板自己拼】拼这条链接要做的事不少:
+     * 换 host:port、TLS 类协议补回隐式 SNI、socks 账号密码转 base64url(V2rayN 认的格式)。
+     * 这套逻辑客户端已经有一份(reviveLink)且踩过坑修好了,在 Java 里再实现一遍
+     * 迟早两边对不上 —— 到时候"面板测能通、V2rayN 里 -1"这种事又要来一回。
+     *
+     * 用 UpdateWrapper 而不是 updateById:MyBatis-Plus 默认不更新 null 字段,
+     * 走 updateById 的话这一列永远清不掉。
+     */
+    @Override
+    public R setForwardClientLink(Long forwardId, String link) {
+        if (forwardId == null) {
+            return R.err("参数不完整");
+        }
+        Forward f = this.getById(forwardId);
+        if (f == null) {
+            return R.err("转发不存在");
+        }
+        String v = (link == null || link.trim().isEmpty()) ? null : link.trim();
+        this.update(new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<Forward>()
+                .eq("id", forwardId)
+                .set("client_link", v)
+                .set("updated_time", System.currentTimeMillis()));
+        return R.ok();
+    }
+
     @Override
     public R getAllForwards() {
         UserInfo currentUser = getCurrentUserInfo();

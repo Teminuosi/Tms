@@ -57,6 +57,23 @@ public class ForwardController extends BaseController {
                 exp == null ? null : Long.valueOf(exp.toString()));
     }
 
+    /**
+     * 写入该转发给车友的客户端链接(聚合订阅里会原样吐出);link 传空即清除。
+     * 链接由客户端算好推上来 —— 拼链接的那套逻辑只在客户端有一份,不在两边各写一遍。
+     */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/set-link")
+    public R setClientLink(@RequestBody Map<String, Object> params) {
+        Object fid = params.get("forwardId");
+        if (fid == null) {
+            return R.err("参数不完整");
+        }
+        Object link = params.get("link");
+        return forwardService.setForwardClientLink(Long.valueOf(fid.toString()),
+                link == null ? null : link.toString());
+    }
+
     @LogAnnotation
     @PostMapping("/list")
     public R readAll() {
