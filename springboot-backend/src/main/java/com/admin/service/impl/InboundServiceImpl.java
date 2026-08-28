@@ -739,10 +739,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
             // 名字规则和链接订阅保持一致:聚合订阅带线路前缀,单条不带。
             // 两种订阅里同一个节点应该叫同一个名字,不然车友对不上。
-            String remark = (in.getRemark() != null && !in.getRemark().isEmpty())
-                    ? in.getRemark()
-                    : protocolDisplayName(in.getProtocol());
-            if (aggUser != null) {
+            boolean customName = in.getRemark() != null && !in.getRemark().isEmpty();
+            String remark = customName ? in.getRemark() : protocolDisplayName(in.getProtocol());
+            // 和链接订阅同一套规则:改过名就不加前缀(见 buildClientLink 的说明)。
+            // 这两处必须一起改 —— 上面的注释本来就写着"两种订阅里同一个节点应该叫同一个名字"。
+            if (aggUser != null && !customName) {
                 StringBuilder prefix = new StringBuilder(node.getName());
                 if (lid != null) {
                     String ln = landingNames.get(lid);
@@ -826,10 +827,13 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     /** namePrefix:聚合订阅里用来标注这个节点属于哪条线路,单条线路订阅传空串 */
     private String buildClientLink(Inbound in, InboundUser iu, Node node, Forward forward, String namePrefix) {
-        String remark = (in.getRemark() != null && !in.getRemark().isEmpty())
-                ? in.getRemark()
-                : protocolDisplayName(in.getProtocol());
-        if (namePrefix != null && !namePrefix.isEmpty()) {
+        boolean customName = in.getRemark() != null && !in.getRemark().isEmpty();
+        String remark = customName ? in.getRemark() : protocolDisplayName(in.getProtocol());
+        // 【改过名就完全听用户的】前缀本来是帮忙区分用的:车友订阅里十几条全叫 VLESS/Trojan,
+        // 不标节点名根本分不清哪条是哪台机器。但用户一旦主动改过名,说明他要自己控制显示,
+        // 这时候再往前面塞"面板机→澳大利亚 "就是帮倒忙了。
+        // 所以只在没改过名(remark 为空、用协议名兜底)时才加前缀。
+        if (!customName && namePrefix != null && !namePrefix.isEmpty()) {
             remark = namePrefix + remark;
         }
         String uuid = iu.getUuid();
