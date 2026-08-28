@@ -66,6 +66,10 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     @Resource
     NodeService nodeService;
 
+    // 「把转发分给车友」时下发【车友专属限速器】用
+    @Resource
+    SpeedLimitService speedLimitService;
+
     // 合体面板:转发端口分配需避开协议入站占用的 sing-box 本机口
     @Resource
     private InboundMapper inboundMapper;
@@ -195,6 +199,90 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         return R.ok(forward);
     }
 
+    /**
+     * 把一条已有的转发「分给车友」:在同一条隧道上、用同一个目标,另建一条归他名下的转发。
+     *
+     * 【为什么不能让车友直接用管理员那条】gost 的限速器、到期、流量统计全挂在「转发」上,
+     * 共用一个入口端口就没法按人计费、也没法单独到期 —— 所以必须一人一条、一人一个端口。
+     * 这正是 InboundServiceImpl.assignUser 第 3 步给车友分配协议时在做的事,
+     * 这里只是把同一套机制用到裸端口转发/隧道转发上。
+     *
+     * 【为什么这条一定能用】路径和管理员自己那条完全一致(同隧道、同目标、同一台入口机),
+     * 只有入口端口不同。之前那套「建落地 + 在入口机建中转协议」是入口机直连落地、
+     * 隧道压根没参与,所以自己能用、车友不能用 —— 那才是上一轮的病根。
+     */
+    @Override
+    public R assignForwardToUser(Long forwardId, Integer userId, Integer speedId, Long expTime) {
+        if (forwardId == null || userId == null) {
+            return R.err("参数不完整");
+        }
+        Forward src = this.getById(forwardId);
+        if (src == null) {
+            return R.err("转发不存在");
+        }
+        User user = userService.getById(userId.longValue());
+        if (user == null) {
+            return R.err("车友不存在");
+        }
+        Tunnel tunnel = validateTunnel(src.getTunnelId());
+        if (tunnel == null) {
+            return R.err("隧道不存在");
+        }
+        if (tunnel.getStatus() != TUNNEL_STATUS_ACTIVE) {
+            return R.err("隧道已禁用，无法分配");
+        }
+
+        // 查重:分过就把现有那条原样还回去。前端双击/重复提交也不会多出一条来占端口
+        String name = "fwd-" + src.getId() + "-user-" + userId;
+        Forward existed = this.getOne(new QueryWrapper<Forward>().eq("name", name).last("limit 1"));
+        if (existed != null) {
+            return R.ok(existed);
+        }
+
+        // 限速走【车友专属限速器】,和分配协议同一套:
+        // gost 的 UDP 转发只认服务级 `$`、不认 per-IP,每车友独立一个才能既限住 UDP、彼此又不影响
+        Integer limiter = null;
+        if (speedId != null) {
+            limiter = (int) (com.admin.common.task.CheckGostConfigAsync.PER_USER_LIMITER_BASE + userId);
+            R lr = speedLimitService.pushUserLimiter(speedId, limiter.longValue(), tunnel.getInNodeId());
+            if (lr.getCode() != 0) {
+                return R.err("下发限速器失败:" + lr.getMsg());
+            }
+        }
+
+        ForwardDto dto = new ForwardDto();
+        dto.setName(name);
+        dto.setTunnelId(src.getTunnelId());
+        dto.setRemoteAddr(src.getRemoteAddr());
+        dto.setStrategy(src.getStrategy());
+        dto.setInterfaceName(src.getInterfaceName());
+        dto.setSpeedId(limiter);
+        dto.setExpTime(expTime);
+
+        // 端口顺延:createForwardForUser 只避得开数据库里已占的口,
+        // 机器 OS 层被别的程序占着它看不见 —— 那种要等 gost 下发时才报出来,得换个口重试
+        PortAllocation pa = allocatePorts(tunnel, null);
+        if (pa.isHasError()) {
+            return R.err(pa.getErrorMessage() + suggestPortHint(tunnel));
+        }
+        Integer tryPort = pa.getInPort();
+        R lastErr = null;
+        for (int attempt = 0; attempt < MAX_PORT_RETRY && tryPort != null; attempt++) {
+            dto.setInPort(tryPort);
+            R r = createForwardForUser(dto, userId, user.getUser());
+            if (r.getCode() == 0) {
+                return r;
+            }
+            lastErr = r;
+            String msg = r.getMsg() == null ? "" : r.getMsg();
+            if (!msg.contains("already in use") && !msg.contains("address already") && !msg.contains("已被占用")) {
+                return r; // 不是端口被占,换端口也没用,把真实原因抛给用户
+            }
+            tryPort = allocateInPortAfter(tunnel, tryPort);
+        }
+        return lastErr != null ? lastErr : R.err("没有可用端口。" + suggestPortHint(tunnel));
+    }
+
     @Override
     public R getAllForwards() {
         UserInfo currentUser = getCurrentUserInfo();
@@ -212,9 +300,13 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         return R.ok(forwardList);
     }
 
-    /** 协议转发命名固定 inbound-{入站id}-user-{用户id},隧道固定 inbound-tunnel-node{节点id} */
+    /**
+     * 协议转发命名固定 inbound-{入站id}-user-{用户id},隧道固定 inbound-tunnel-node{节点id};
+     * 「把转发分给车友」生成的固定 fwd-{源转发id}-user-{用户id} —— 三月说过隧道页里
+     * 不要混进车友的东西,所以这类也一并打标,前端默认收起。
+     */
     private static boolean isProtocolManaged(String forwardName, String tunnelName) {
-        if (forwardName != null && forwardName.matches("^inbound-\\d+-user-\\d+$")) {
+        if (forwardName != null && forwardName.matches("^(inbound|fwd)-\\d+-user-\\d+$")) {
             return true;
         }
         return tunnelName != null && tunnelName.startsWith("inbound-tunnel-node");

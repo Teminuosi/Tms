@@ -34,6 +34,29 @@ public class ForwardController extends BaseController {
         return forwardService.createForward(forwardDto);
     }
 
+    /**
+     * 把一条已有的转发分给车友:同隧道、同目标,另建一条归他名下的
+     * (独立入口端口 / 独立限速 / 独立到期 / 独立流量统计)。
+     * 取消分配就是删掉那条,走现成的 /delete。
+     */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/assign")
+    public R assignToUser(@RequestBody Map<String, Object> params) {
+        Object fid = params.get("forwardId");
+        Object uid = params.get("userId");
+        if (fid == null || uid == null) {
+            return R.err("参数不完整");
+        }
+        Object speed = params.get("speedId");
+        Object exp = params.get("expTime");
+        return forwardService.assignForwardToUser(
+                Long.valueOf(fid.toString()),
+                Integer.valueOf(uid.toString()),
+                speed == null ? null : Integer.valueOf(speed.toString()),
+                exp == null ? null : Long.valueOf(exp.toString()));
+    }
+
     @LogAnnotation
     @PostMapping("/list")
     public R readAll() {
