@@ -9,6 +9,8 @@ interface TabItem {
   label: string;
   icon: React.ReactNode;
   adminOnly?: boolean;
+  /** 只给非管理员看。车友的底栏本来只剩三项,而「我的订阅」正是他唯一真正要用的页面 */
+  userOnly?: boolean;
 }
 
 
@@ -43,14 +45,26 @@ export default function H5Layout({
       )
     },
     {
-      path: '/tunnel',
-      label: '隧道',
+      path: '/inbound',
+      label: '协议',
       icon: (
         <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
           <path fillRule="evenodd" d="M12.586 4.586a2 2 0 112.828 2.828l-3 3a2 2 0 01-2.828 0 1 1 0 00-1.414 1.414 4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.5 1.5a1 1 0 101.414 1.414l1.5-1.5zm-5 5a2 2 0 012.828 0 1 1 0 101.414-1.414 4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.5-1.5a1 1 0 10-1.414-1.414l-1.5 1.5a2 2 0 11-2.828-2.828l3-3z" clipRule="evenodd" />
         </svg>
       ),
       adminOnly: true
+    },
+    {
+      // 车友看不到上面那些管理项,底栏会空到只剩三个;而「我的订阅」是他登录进来
+      // 唯一真正要用的页面 —— 原来手机端连入口都没有,只能手输 /my-sub。
+      path: '/my-sub',
+      label: '我的订阅',
+      icon: (
+        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+          <path fillRule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zm0 5a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1V9zm9 0a1 1 0 011-1h3a1 1 0 011 1v1a1 1 0 01-1 1h-3a1 1 0 01-1-1V9zm0 5a1 1 0 011-1h3a1 1 0 011 1v1a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1z" clipRule="evenodd" />
+        </svg>
+      ),
+      userOnly: true
     },
     {
       path: '/node',
@@ -94,8 +108,8 @@ export default function H5Layout({
   };
 
   // 过滤tab项（根据权限）
-  const filteredTabItems = tabItems.filter(item => 
-    !item.adminOnly || isAdmin
+  const filteredTabItems = tabItems.filter(item =>
+    (!item.adminOnly || isAdmin) && (!item.userOnly || !isAdmin)
   );
 
   // 路由切换时回到页面顶部，避免上一页的滚动位置遗留

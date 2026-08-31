@@ -55,8 +55,56 @@ export default function ProfilePage() {
     setIsAdmin(adminFlag);
   }, []);
 
-  // 管理员菜单项
+  // 管理员菜单项。
+  // 【为什么这几项要补进来】手机端底栏只放得下五个,其余功能一直靠这个九宫格兜底。
+  // 但补的时候漏了几个:协议管理、中转、使用说明从来没有入口,手机上只能手输 URL。
+  // 有人报"手机端没有协议入口",查下来其实是一批。
+  // 协议已经提到底栏(比隧道高频),隧道相应挪到这里。
   const adminMenuItems: MenuItem[] = [
+    {
+      path: '/relay',
+      label: '中转',
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path fillRule="evenodd" d="M12.293 5.293a1 1 0 011.414 0l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-2.293-2.293a1 1 0 010-1.414z" clipRule="evenodd" />
+        </svg>
+      ),
+      color: 'bg-cyan-100 dark:bg-cyan-500/20 text-cyan-600 dark:text-cyan-400',
+      description: '通过前置节点中转到落地'
+    },
+    {
+      path: '/tunnel',
+      label: '隧道管理',
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path fillRule="evenodd" d="M12.586 4.586a2 2 0 112.828 2.828l-3 3a2 2 0 01-2.828 0 1 1 0 00-1.414 1.414 4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.5 1.5a1 1 0 101.414 1.414l1.5-1.5zm-5 5a2 2 0 012.828 0 1 1 0 101.414-1.414 4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.5-1.5a1 1 0 10-1.414-1.414l-1.5 1.5a2 2 0 11-2.828-2.828l3-3z" clipRule="evenodd" />
+        </svg>
+      ),
+      color: 'bg-green-100 dark:bg-green-500/20 text-green-600 dark:text-green-400',
+      description: '端口转发与隧道转发'
+    },
+    {
+      path: '/my-sub',
+      label: '我的订阅',
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path fillRule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zm0 5a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H4a1 1 0 01-1-1V9zm9 0a1 1 0 011-1h3a1 1 0 011 1v1a1 1 0 01-1 1h-3a1 1 0 01-1-1V9zm0 5a1 1 0 011-1h3a1 1 0 011 1v1a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1z" clipRule="evenodd" />
+        </svg>
+      ),
+      color: 'bg-indigo-100 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400',
+      description: '自己的订阅链接'
+    },
+    {
+      path: '/guide',
+      label: '使用说明',
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+        </svg>
+      ),
+      color: 'bg-slate-100 dark:bg-slate-500/20 text-slate-600 dark:text-slate-400',
+      description: '面板使用说明'
+    },
     {
       path: '/limit',
       label: '限速管理',
