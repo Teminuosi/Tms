@@ -300,7 +300,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     public R deleteInbound(Long id) {
         Inbound in = this.getById(id);
         if (in == null) {
-            return R.err("入站不存在");
+            // 【已经没了 = 删成功】调用方要的结果是"这条不在了",而它已经不在了。
+            // 报成失败没有任何好处:客户端会红字提示,用户以为出了问题、再点一次,
+            // 于是再报一次。搭建半路失败留下过期列表时,这会连着弹一串红条。
+            return R.ok("入站不存在,视为已删除");
         }
         List<InboundUser> users = inboundUserMapper.selectList(
                 new QueryWrapper<InboundUser>().eq("inbound_id", id));
