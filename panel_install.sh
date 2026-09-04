@@ -239,7 +239,10 @@ install_tms_command() {
 # TMS 面板管理命令(类似 x-ui)。直接输 tms 打开管理菜单。
 TMS_DIR="$panel_dir"
 [ -d "\$TMS_DIR" ] && cd "\$TMS_DIR"
-exec bash /usr/local/bin/tms-panel.sh "\${1:-menu}"
+# 参数要全部透传:tms domain a.com 有两个参数,只传 \$1 会把域名丢掉
+# (这个坑让「配置域名」整个功能形同虚设过一阵子)
+if [ \$# -eq 0 ]; then exec bash /usr/local/bin/tms-panel.sh menu; fi
+exec bash /usr/local/bin/tms-panel.sh "\$@"
 EOF
   chmod +x /usr/local/bin/tms 2>/dev/null || true
   echo "✅ 管理命令已就绪:以后输入  tms  即可打开管理菜单(更新/卸载/彻底清理/查看状态)"
@@ -259,6 +262,27 @@ get_server_ip() {
     || echo '你的服务器IP'
 }
 
+# 查域名的 A 记录(IPv4)。
+# 【为什么不用 getent hosts】它按 getaddrinfo 的顺序返回,域名同时有 AAAA 记录时
+# 头一条可能是 IPv6,拿去和公网 IPv4 比必然「对不上」,给人一个假警报;
+# 而且精简系统的 nsswitch.conf 里 hosts 少了 dns 时它直接返回空 = 假「解析不到」。
+# 改用 ahostsv4(只要 IPv4),再依次回退 dig / host / nslookup。
+resolve_a_record() {
+  local d="$1" ip=""
+  ip="$(getent ahostsv4 "$d" 2>/dev/null | awk '{print $1}' | head -n1)"
+  if [ -z "$ip" ] && command -v dig >/dev/null 2>&1; then
+    ip="$(dig +short +time=3 +tries=2 A "$d" 2>/dev/null | grep -E '^[0-9.]+$' | head -n1)"
+  fi
+  if [ -z "$ip" ] && command -v host >/dev/null 2>&1; then
+    ip="$(host -t A "$d" 2>/dev/null | awk '/has address/{print $4; exit}')"
+  fi
+  if [ -z "$ip" ] && command -v nslookup >/dev/null 2>&1; then
+    # 等 Name: 出现后再取 Address: —— 前面那段是 DNS 服务器自己的地址,
+    # 虽然它那行用的是制表符、多半匹配不上,但加个守卫更稳
+    ip="$(nslookup -type=A "$d" 2>/dev/null | awk '/^Name:/{f=1} f && /^Address: /{print $2; exit}')"
+  fi
+  echo "$ip"
+}
 # 取面板前端端口(.env 里的,默认 6366)
 get_frontend_port() {
   local fport=""
@@ -492,6 +516,10 @@ update_panel() {
       fi
     fi
     rm -f /tmp/tms-panel.new 2>/dev/null
+
+  # 顺带把 tms 启动器重装一遍:老机器上那份可能是有 bug 的旧版本
+  # (比如只透传 $1 的那版,会让 tms domain 完全失效)。装它很便宜,每次更新都刷新一下最稳。
+  install_tms_command >/dev/null 2>&1 || true
   fi
 
   echo "🔄 开始更新面板..."
@@ -1394,10 +1422,11 @@ setup_domain() {
   echo "[1/5] 检查域名解析..."
   local server_ip resolved
   server_ip="$(get_server_ip)"
-  resolved="$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -n1)"
+  resolved="$(resolve_a_record "$domain")"
   if [ -z "$resolved" ]; then
     echo "   ⚠️  解析不到 $domain,证书大概率申请不下来。"
     echo "      先去域名后台加一条 A 记录指向 $server_ip,等生效再来。"
+    echo "      刚改完 DNS 的话等几分钟很正常;确认已经生效了就选 y 继续。"
     read -p "      仍然继续? (y/N): " go
     [[ "$go" == "y" || "$go" == "Y" ]] || { echo "已取消"; return 1; }
   elif [ "$resolved" != "$server_ip" ]; then
