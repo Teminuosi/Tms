@@ -11,6 +11,9 @@ import javax.validation.constraints.NotBlank;
 public class LandingDto {
 
     @NotBlank(message = "落地名称不能为空")
+    /** 改落地时必传;新建时留空 */
+    private Long id;
+
     private String name;
 
     @NotBlank(message = "分享链接不能为空")

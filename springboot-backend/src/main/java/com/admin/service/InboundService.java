@@ -27,6 +27,9 @@ public interface InboundService extends IService<Inbound> {
     R getInbounds();
 
     /** 删除入站(连带其用户的 gost 转发 + 重推配置) */
+    /** 把某台机器的 sing-box 配置重推一遍(改了落地出口之后要用) */
+    R pushNodeConfig(Long nodeId);
+
     R deleteInbound(Long id);
 
     /** 清空某节点上目标组的协议入站(relay=true 清某落地的中转;否则清直连);连带其转发/用户 */

@@ -75,6 +75,21 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     @Autowired
     private com.admin.service.LandingService landingService;
 
+    /**
+     * 把某台机器的 sing-box 配置重推一遍。
+     * 【为什么要暴露出来】改了落地的出口串之后,数据库是新的、机器上跑的还是旧配置,
+     * 用户会以为「改了没生效」。但重推不能放在 LandingServiceImpl 里做 ——
+     * 本类已经注入了 LandingService,反向注入会形成循环依赖(Spring Boot 2.6+ 默认禁止),
+     * 所以由 Controller 层编排:先改落地,再调这个方法逐台重推。
+     */
+    @Override
+    public R pushNodeConfig(Long nodeId) {
+        if (nodeId == null) {
+            return R.err("缺少节点 id");
+        }
+        return pushNodeSingbox(nodeId);
+    }
+
     @Override
     public R createInbound(InboundDto dto) {
         R built = buildAndSaveInbound(dto);
