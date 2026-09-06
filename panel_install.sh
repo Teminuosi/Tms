@@ -50,7 +50,27 @@ check_docker() {
   # 全自动一键:没装 Docker 就用官方脚本自动装
   if ! command -v docker &> /dev/null; then
     echo "🔧 未检测到 Docker，正在自动安装..."
-    curl -fsSL https://get.docker.com | sh
+    curl -fsSL https://get.docker.com | sh || true
+
+    # 【为什么要兜底】get.docker.com 不认 AlmaLinux / Rocky 这些 RHEL 衍生版,
+    # 直接报 Unsupported distribution 就退出 —— 有用户的 AlmaLinux 就是这么装不上的。
+    # 这些系统本身完全能跑 Docker,官方也提供 CentOS 源,只是那个脚本没把它们列进白名单。
+    if ! command -v docker &> /dev/null && command -v dnf &> /dev/null; then
+      echo "🔧 官方脚本不认这个系统,改用 dnf + Docker 官方 CentOS 源..."
+      dnf -y install dnf-plugins-core &> /dev/null || true
+      # config-manager 的子命令新旧 dnf 写法不同,两种都试一遍
+      dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo &> /dev/null || dnf config-manager addrepo --from-repofile=https://download.docker.com/linux/centos/docker-ce.repo &> /dev/null || true
+      dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || true
+    fi
+
+    # 再兜一层:老的 CentOS/RHEL 只有 yum
+    if ! command -v docker &> /dev/null && command -v yum &> /dev/null; then
+      echo "🔧 再试一次:yum + Docker 官方 CentOS 源..."
+      yum -y install yum-utils &> /dev/null || true
+      yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo &> /dev/null || true
+      yum -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin || true
+    fi
+
     if command -v systemctl &> /dev/null; then
       systemctl enable docker &> /dev/null || true
       systemctl start docker &> /dev/null || true
@@ -67,7 +87,11 @@ check_docker() {
       exit 1
     fi
   else
-    echo "错误：Docker 自动安装失败，请手动安装后重试。"
+    echo "错误：Docker 自动安装失败。"
+    echo "      已经试过:官方脚本 get.docker.com、dnf 源、yum 源。"
+    echo "      系统信息(发给作者能快很多):"
+    ( . /etc/os-release 2>/dev/null && echo "      $PRETTY_NAME" ) || uname -a
+    echo "      手动装好 Docker(docker --version 能出版本)后重跑本脚本即可。"
     exit 1
   fi
   echo "检测到 Docker 命令：$DOCKER_CMD"
