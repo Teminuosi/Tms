@@ -1349,11 +1349,17 @@ export_migration_sql() {
     fi
   fi
 
-  # 检查文件大小
+  # 检查文件大小 + 完整性
   if [[ -f "$SQL_FILE" ]] && [[ -s "$SQL_FILE" ]]; then
+    if ! _verify_sql_dump "$SQL_FILE"; then
+      rm -f "$SQL_FILE"
+      return 1
+    fi
     FILE_SIZE=$(du -h "$SQL_FILE" | cut -f1)
     echo "📁 文件位置: $(pwd)/$SQL_FILE"
     echo "📊 文件大小: $FILE_SIZE"
+    echo "🔒 已校验完整(结尾有 mysqldump 结束标记)"
+    echo "➡️  搬到新机器:装好面板后跑  tms restore $SQL_FILE"
   else
     echo "❌ 导出的文件为空或不存在"
     rm -f "$SQL_FILE"
@@ -1569,6 +1575,141 @@ uninstall_panel() {
   echo "✅ 卸载完成"
 }
 
+# ============ 备份自检 + 恢复(迁移到新机器)============
+# 背景:面板机 VPS 到期要换机器。原来只有 export 能把库导出来,导出来之后【灌不回去】,
+# 而且 export 只检查"文件非空" —— 被打断的半截 dump 照样算成功。
+
+# 备份完整性自检。
+# 【为什么非查不可】mysqldump 正常结束会在文件末尾写一行 "-- Dump completed on ...";
+# 中途被 OOM 杀掉、磁盘写满、容器重启,文件照样存在而且非空 —— 只看大小是查不出来的。
+# 用户会拿这个文件去迁移:他照常退掉旧机器,等 restore 才发现数据回不来,那时已经没退路了。
+# 所以给一个坏备份比不给备份更糟,这一步不能省。
+_verify_sql_dump() {
+  local f="$1"
+  [[ -s "$f" ]] || { echo "❌ 备份文件为空"; return 1; }
+  if ! tail -c 2000 "$f" | grep -q -- "-- Dump completed"; then
+    echo "❌ 备份不完整:文件末尾没有 mysqldump 的结束标记"
+    echo "   多半是导出中途被打断(磁盘满 / 内存不够 / 容器被重启)"
+    echo "   这个文件【不能用来迁移】。腾出空间后重新导出一次。"
+    return 1
+  fi
+  return 0
+}
+
+# 读数据库配置(优先容器环境变量,退到 .env),和 export 一个口径
+_load_db_cfg() {
+  if docker ps --format "{{.Names}}" | grep -q "^springboot-backend$"; then
+    local info
+    info=$(docker exec springboot-backend env 2>/dev/null | grep "^DB_" || echo "")
+    DB_NAME=$(echo "$info" | grep "^DB_NAME=" | cut -d'=' -f2)
+    DB_USER=$(echo "$info" | grep "^DB_USER=" | cut -d'=' -f2)
+    DB_PASSWORD=$(echo "$info" | grep "^DB_PASSWORD=" | cut -d'=' -f2)
+  fi
+  if [[ -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASSWORD" ]] && [[ -f ".env" ]]; then
+    DB_NAME=$(grep "^DB_NAME=" .env | cut -d'=' -f2 2>/dev/null)
+    DB_USER=$(grep "^DB_USER=" .env | cut -d'=' -f2 2>/dev/null)
+    DB_PASSWORD=$(grep "^DB_PASSWORD=" .env | cut -d'=' -f2 2>/dev/null)
+  fi
+  [[ -n "$DB_NAME" && -n "$DB_USER" && -n "$DB_PASSWORD" ]]
+}
+
+# 先定下用哪个账号,【不能】像 export 那样用 `A || B` 重试。
+# 恢复是把 .sql 从 stdin 灌进去的:第一次尝试会把 stdin 读走一部分,
+# 回退到 root 再跑就只剩半截数据 —— 那是一次静默的数据损坏,比直接失败危险得多。
+_pick_mysql_user() {
+  if docker exec gost-mysql mysql -u "$DB_USER" -p"$DB_PASSWORD" -e "SELECT 1" >/dev/null 2>&1; then
+    MYSQL_AS="$DB_USER"
+  elif docker exec gost-mysql mysql -u root -p"$DB_PASSWORD" -e "SELECT 1" >/dev/null 2>&1; then
+    MYSQL_AS="root"
+  else
+    echo "❌ 连不上数据库(业务账号和 root 都不行),密码可能对不上"
+    return 1
+  fi
+  return 0
+}
+
+# 恢复备份 —— 全脚本唯一一个会毁数据的操作,守卫都在这里。
+restore_migration_sql() {
+  local file="$1" force="$2"
+
+  if [[ -z "$file" ]]; then
+    echo "用法: tms restore <备份文件.sql> [--force]"
+    echo "  备份文件用 tms export 生成。--force 才允许覆盖已有数据的库。"
+    return 1
+  fi
+  [[ -f "$file" ]] || { echo "❌ 找不到文件: $file"; return 1; }
+
+  echo "🔍 先校验备份文件完整性..."
+  _verify_sql_dump "$file" || return 1
+  echo "✅ 备份文件完整"
+
+  if ! docker ps --format "{{.Names}}" | grep -q "^gost-mysql$"; then
+    echo "❌ 数据库容器没在跑。先在这台机器上装好面板(tms install)再恢复。"
+    return 1
+  fi
+  _load_db_cfg || { echo "❌ 读不到数据库配置(容器和 .env 都没有)"; return 1; }
+  _pick_mysql_user || return 1
+  echo "📋 目标库: $DB_NAME (用 $MYSQL_AS 连接)"
+
+  # 守卫一:目标库非空时不许直接覆盖。
+  # 新机器刚装完面板,库里是有初始表的 —— 所以这条一定会触发,必须让用户自己确认。
+  local cnt
+  cnt=$(docker exec gost-mysql mysql -u "$MYSQL_AS" -p"$DB_PASSWORD" -N -B \
+        -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME'" 2>/dev/null | tr -d '\r')
+  if [[ "${cnt:-0}" -gt 0 && "$force" != "--force" ]]; then
+    echo ""
+    echo "⚠️  目标库 $DB_NAME 里已经有 $cnt 张表,恢复会【覆盖】它们。"
+    echo "   新机器刚装完面板本来就有初始表,这是正常的 —— 确认这台机器上"
+    echo "   没有你还要的数据,再加 --force 重跑:"
+    echo ""
+    echo "     tms restore $file --force"
+    echo ""
+    return 1
+  fi
+
+  # 守卫二:动手前先把现状导出来。万一备份文件其实对不上(版本不同、导错库),
+  # 至少还能退回去。这一步失败不阻断 —— 空库本来就没什么可备的。
+  if [[ "${cnt:-0}" -gt 0 ]]; then
+    local safety="before_restore_$(date +%Y%m%d_%H%M%S).sql"
+    echo "💾 先把当前数据存一份到 $safety(出问题能退回去)..."
+    if docker exec gost-mysql mysqldump -u "$MYSQL_AS" -p"$DB_PASSWORD" \
+         --single-transaction --routines --triggers "$DB_NAME" > "$safety" 2>/dev/null \
+       && _verify_sql_dump "$safety" >/dev/null 2>&1; then
+      echo "✅ 已存:$(pwd)/$safety"
+    else
+      rm -f "$safety"
+      echo "⚠️  当前数据没存成(库可能是空的),继续恢复"
+    fi
+  fi
+
+  # 停后端再灌:边写边被后端读会读到半截数据,起来后行为难以预料
+  echo "⏸  暂停后端..."
+  docker stop springboot-backend >/dev/null 2>&1 || true
+
+  echo "⏳ 正在恢复..."
+  local rc=0
+  docker exec -i gost-mysql mysql -u "$MYSQL_AS" -p"$DB_PASSWORD" "$DB_NAME" < "$file" 2>/dev/null || rc=$?
+
+  echo "▶️  重启后端..."
+  docker start springboot-backend >/dev/null 2>&1 || true
+
+  if [[ $rc -ne 0 ]]; then
+    echo "❌ 恢复失败(mysql 退出码 $rc)"
+    echo "   库可能停在中间状态。上面那份 before_restore_*.sql 可以退回去:"
+    echo "     tms restore before_restore_xxx.sql --force"
+    return 1
+  fi
+
+  echo ""
+  echo "✅ 恢复完成"
+  echo ""
+  echo "⚠️  换了机器就意味着【面板地址变了】,还有两件事必须做:"
+  echo "   1. 节点不用重装 —— 去每台转发机上把面板地址改成这台的,连上就行"
+  echo "   2. 车友手上的订阅链接前半段就是旧面板地址,【会全部失效】。"
+  echo "      沿用同一个域名最省事(tms domain 你的域名);否则要重新发订阅给所有人。"
+  return 0
+}
+
 # 主逻辑：默认一令到底直接安装；传参数才做别的
 #   ./panel_install.sh            直接安装（默认，无需选择）
 #   ./panel_install.sh update     更新
@@ -1581,6 +1722,9 @@ main() {
     uninstall) uninstall_panel; delete_self ;;
     purge)     purge_panel; delete_self ;;
     export)    export_migration_sql; delete_self ;;
+    # 迁移到新机器:旧机 tms export → 拷走 .sql → 新机装好面板后 tms restore
+    # 【不 delete_self】恢复可能要因为守卫提示再跑一次(加 --force),把脚本删了就得重下
+    restore)   restore_migration_sql "$2" "$3" ;;
     status)    show_status ;;
     info)      show_access_info ;;
     domain)    setup_domain "$2" ;;
@@ -1609,6 +1753,7 @@ menu_loop() {
       5) show_status ;;
       6) show_access_info ;;
       7) export_migration_sql ;;
+      8) read -rp "备份文件路径: " _f; restore_migration_sql "$_f" ;;
       8)
         show_domain_status
         echo ""
