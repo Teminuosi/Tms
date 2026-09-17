@@ -1334,13 +1334,19 @@ export_migration_sql() {
   SQL_FILE="database_backup_$(date +%Y%m%d_%H%M%S).sql"
   echo "📝 导出数据库备份: $SQL_FILE"
 
+  # 【--default-character-set=utf8mb4 不能省】面板库建的时候就是 utf8mb4
+  # (docker-compose 里 --character-set-server=utf8mb4,gost.sql 里每张表也是),
+  # 而 mysqldump 不指定时默认按 utf8 连接 —— 那是【3 字节】的 utf8,
+  # 4 字节字符会被静默换成 ?。节点名写成「🇭🇰香港01」的人不少,
+  # 搬完机器名字就没了,而且中文是 3 字节、完好无损,所以极难被发现。
+  # 实测过:F09F87ADF09F87B0(🇭🇰)不加这个参数导出来就是 ??。
   # 使用 mysqldump 导出数据库
   echo "⏳ 正在导出数据库..."
-  if docker exec gost-mysql mysqldump -u "$DB_USER" -p"$DB_PASSWORD" --single-transaction --routines --triggers "$DB_NAME" > "$SQL_FILE" 2>/dev/null; then
+  if docker exec gost-mysql mysqldump --default-character-set=utf8mb4 -u "$DB_USER" -p"$DB_PASSWORD" --single-transaction --routines --triggers "$DB_NAME" > "$SQL_FILE" 2>/dev/null; then
     echo "✅ 数据库导出成功"
   else
     echo "⚠️ 使用用户密码失败，尝试root密码..."
-    if docker exec gost-mysql mysqldump -u root -p"$DB_PASSWORD" --single-transaction --routines --triggers "$DB_NAME" > "$SQL_FILE" 2>/dev/null; then
+    if docker exec gost-mysql mysqldump --default-character-set=utf8mb4 -u root -p"$DB_PASSWORD" --single-transaction --routines --triggers "$DB_NAME" > "$SQL_FILE" 2>/dev/null; then
       echo "✅ 数据库导出成功"
     else
       echo "❌ 数据库导出失败"
@@ -1672,7 +1678,7 @@ restore_migration_sql() {
   if [[ "${cnt:-0}" -gt 0 ]]; then
     local safety="before_restore_$(date +%Y%m%d_%H%M%S).sql"
     echo "💾 先把当前数据存一份到 $safety(出问题能退回去)..."
-    if docker exec gost-mysql mysqldump -u "$MYSQL_AS" -p"$DB_PASSWORD" \
+    if docker exec gost-mysql mysqldump --default-character-set=utf8mb4 -u "$MYSQL_AS" -p"$DB_PASSWORD" \
          --single-transaction --routines --triggers "$DB_NAME" > "$safety" 2>/dev/null \
        && _verify_sql_dump "$safety" >/dev/null 2>&1; then
       echo "✅ 已存:$(pwd)/$safety"
@@ -1688,7 +1694,7 @@ restore_migration_sql() {
 
   echo "⏳ 正在恢复..."
   local rc=0
-  docker exec -i gost-mysql mysql -u "$MYSQL_AS" -p"$DB_PASSWORD" "$DB_NAME" < "$file" 2>/dev/null || rc=$?
+  docker exec -i gost-mysql mysql --default-character-set=utf8mb4 -u "$MYSQL_AS" -p"$DB_PASSWORD" "$DB_NAME" < "$file" 2>/dev/null || rc=$?
 
   echo "▶️  重启后端..."
   docker start springboot-backend >/dev/null 2>&1 || true
