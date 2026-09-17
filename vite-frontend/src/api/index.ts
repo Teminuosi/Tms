@@ -102,7 +102,18 @@ export const pushNodeConfig = (nodeId: number) => Network.post("/inbound/push-co
 // 中转(前置机协议 + 落地出口):落地内联粘贴、测试、搭建
 export const oneClickRelay = (nodeId: number, link: string, name?: string, sni?: string) => Network.post("/inbound/one-click-relay", { nodeId, link, name, sni });
 export const testLanding = (nodeId: number, link: string) => Network.post("/landing/test", { nodeId, link });
-export const getLandingList = () => Network.post("/landing/list"); // 仅用于中转卡片显示落地名
+export const getLandingList = () => Network.post("/landing/list");
+// 落地独立管理(「落地管理」页)。以前只能在搭中转时顺手建一条,建完就再也改不了 ——
+// 粉丝原话:「创建完成后落地出口(socks5)配置无法二次更改,只能删掉中转重建,
+// 然后又要去指挥舱删不需要的协议」。后端 create/update/delete 一直都在,只是前端没接。
+export const createLanding = (data: { name: string; link: string; remark?: string }) =>
+  Network.post("/landing/create", data);
+// ⚠️ update 成功时后端会把用到这条落地的机器全部重推一遍 sing-box 配置;
+// 只要有一台没推上就返回 code!=0,但【库里已经改了】—— 调用方别当成「保存失败」。
+export const updateLanding = (data: { id: number; name: string; link: string; remark?: string }) =>
+  Network.post("/landing/update", data);
+// 被中转协议占用时后端会拒绝并说明占用数量,不做级联删除
+export const deleteLanding = (id: number) => Network.post("/landing/delete", { id });
 
 // 订阅按线路(车友×机器):一个车友的所有订阅线路
 export const getUserLines = (userId: number) => Network.post("/inbound/user-lines", { userId });
