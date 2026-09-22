@@ -1634,6 +1634,17 @@ _pick_mysql_user() {
   return 0
 }
 
+# 跑一条 SQL(不要回显)。调用前必须先 _load_db_cfg + _pick_mysql_user。
+_sql_exec() {
+  docker exec gost-mysql mysql --default-character-set=utf8mb4 \
+    -u "$MYSQL_AS" -p"$DB_PASSWORD" "$DB_NAME" -e "$1" 2>/dev/null
+}
+# 取单个值(-N 去表头 -B 用制表符);顺手去掉 \r,否则和字符串比较会永远不相等
+_sql_scalar() {
+  docker exec gost-mysql mysql --default-character-set=utf8mb4 \
+    -u "$MYSQL_AS" -p"$DB_PASSWORD" "$DB_NAME" -N -B -e "$1" 2>/dev/null | tr -d '\r' | head -1
+}
+
 # 恢复备份 —— 全脚本唯一一个会毁数据的操作,守卫都在这里。
 restore_migration_sql() {
   local file="$1" force="$2"
@@ -1688,6 +1699,12 @@ restore_migration_sql() {
     fi
   fi
 
+  # 备份里带着【上一台机器的】面板地址。这台机器装好时 install 已经探测过自己的公网 IP
+  # 写进了 vite_config.ip,恢复会把它盖掉 —— 而那个值决定「安装命令」里 -a 后面跟什么。
+  # 盖掉之后新装的节点会去连旧机器。先把这台机器自己的值记下来,恢复完对比。
+  local addr_new
+  addr_new=$(_sql_scalar "SELECT value FROM vite_config WHERE name='ip' LIMIT 1")
+
   # 停后端再灌:边写边被后端读会读到半截数据,起来后行为难以预料
   echo "⏸  暂停后端..."
   docker stop springboot-backend >/dev/null 2>&1 || true
@@ -1695,6 +1712,18 @@ restore_migration_sql() {
   echo "⏳ 正在恢复..."
   local rc=0
   docker exec -i gost-mysql mysql --default-character-set=utf8mb4 -u "$MYSQL_AS" -p"$DB_PASSWORD" "$DB_NAME" < "$file" 2>/dev/null || rc=$?
+
+  # 节点的「在线」必须重新挣回来。
+  # node.status 只有两个人写:WebSocketServer 的 afterConnectionEstablished 写 1、
+  # afterConnectionClosed 写 0。备份是在旧面板【连接正常时】导的,所以库里全是 1;
+  # 而这台新面板从来没有过那些连接,也就【永远不会】把它改回 0 ——
+  # 结果是界面一直显示「在线」,其实一个节点都没连上来。
+  # 粉丝反馈的原话:「转发机显示在线(节点也正常)但是不显示设备信息」——
+  # 设备信息(CPU/内存/开机时间/流量)全靠那条 WS 实时推,所以才会只有存库的字段有值。
+  # 假在线比离线糟得多:它把问题藏住了,人家根本想不到往连接上查。
+  if [[ $rc -eq 0 ]]; then
+    _sql_exec "UPDATE node SET status=0;" >/dev/null 2>&1 || true
+  fi
 
   echo "▶️  重启后端..."
   docker start springboot-backend >/dev/null 2>&1 || true
@@ -1708,9 +1737,29 @@ restore_migration_sql() {
 
   echo ""
   echo "✅ 恢复完成"
+  echo "   已把所有节点的在线状态重置为离线 —— 它们真正连上这台面板后会自动变回在线。"
+  echo "   ⏳ 等一两分钟看面板:如果一直不变绿,就是节点连不上这台机器(往下看第 1 条)。"
+
+  # 面板地址:恢复把这台机器自己探测到的值覆盖成了备份里的旧值。
+  # 这个值决定「安装命令」里 -a 后面跟什么 —— 不改的话新装的节点会去连旧机器。
+  local addr_now
+  addr_now=$(_sql_scalar "SELECT value FROM vite_config WHERE name='ip' LIMIT 1")
+  if [[ -n "$addr_new" && -n "$addr_now" && "$addr_new" != "$addr_now" ]]; then
+    echo ""
+    echo "⚠️  面板地址被备份里的旧值覆盖了:"
+    echo "      这台机器装好时探测到的:$addr_new"
+    echo "      备份里带过来的(当前生效):$addr_now"
+    echo "   「安装命令」里的面板地址用的就是当前这个值。"
+    echo "   · 沿用同一个域名(DNS 已指到这台)→ 不用动"
+    echo "   · 换地址了 → 去面板「网站配置」把它改成 $addr_new 或你的新域名,"
+    echo "     否则【新装的节点会去连旧机器】,装完永远不上线。"
+  fi
+
   echo ""
-  echo "⚠️  换了机器就意味着【面板地址变了】,还有两件事必须做:"
-  echo "   1. 节点不用重装 —— 去每台转发机上把面板地址改成这台的,连上就行"
+  echo "⚠️  换机器还有两件事必须做:"
+  echo "   1. 已有节点连的还是旧地址。沿用同一个域名(把 DNS 指到这台)它们会自己连回来;"
+  echo "      换了地址就得去每台转发机上改面板地址。另外别忘了这台机器的防火墙/安全组"
+  echo "      要放行面板端口 —— 新 VPS 的安全组是全新的,节点连不上多半卡在这。"
   echo "   2. 车友手上的订阅链接前半段就是旧面板地址,【会全部失效】。"
   echo "      沿用同一个域名最省事(tms domain 你的域名);否则要重新发订阅给所有人。"
   return 0
