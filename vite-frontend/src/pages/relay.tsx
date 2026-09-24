@@ -9,6 +9,7 @@ import { Autocomplete, AutocompleteItem } from "@heroui/autocomplete";
 import { DatePicker } from "@heroui/date-picker";
 import { parseDate } from "@internationalized/date";
 import toast from "react-hot-toast";
+import { toastResult } from "@/utils/partial-success";
 import {
   getInboundList,
   oneClickRelay,
@@ -130,13 +131,12 @@ export default function RelayPage() {
     setBuildLoading(true);
     try {
       const res = await oneClickRelay(buildForm.nodeId, buildForm.link, buildForm.name, cleanSni(buildForm.sni));
-      if (res.code === 0) {
-        toast.success("一键搭中转完成:整机协议已建好,出口走落地");
+      // 同 inbound 页:半成功(「中转已入库,但下发配置失败」「中断…已成功 N 个」)
+      // 协议是真建出来了,不该报红条、不该把弹窗晾着让人再点一次。
+      if (toastResult(res, "一键搭中转完成:整机协议已建好,出口走落地", "搭建失败", toast)) {
         setBuildOpen(false);
-        loadAll();
-      } else {
-        toast.error(res.msg || "搭建失败");
       }
+      loadAll(); // 真失败也刷,列表要回到面板真实的样子
     } catch (e) {
       toast.error("搭建失败");
     }

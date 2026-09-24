@@ -9,6 +9,7 @@ import { Autocomplete, AutocompleteItem } from "@heroui/autocomplete";
 import { DatePicker } from "@heroui/date-picker";
 import { parseDate } from "@internationalized/date";
 import toast from "react-hot-toast";
+import { toastResult } from "@/utils/partial-success";
 import {
   getInboundList,
   createInbound,
@@ -147,13 +148,15 @@ export default function InboundPage() {
     setOneClickLoading(true);
     try {
       const res = await oneClickInbound(oneClickNodeId, cleanSni(oneClickSni));
-      if (res.code === 0) {
-        toast.success("一键添加完成:整机全套协议已建好");
+      // 半成功(「已入库,但下发配置失败」「中断…已成功 3 个」)也要关弹窗:
+      // 协议是真建出来了。以前它走 else 分支报红条、列表不刷新、弹窗还开着,
+      // 用户十有八九再点一次 —— 那会重复建、撞端口。
+      if (toastResult(res, "一键添加完成:整机全套协议已建好", "一键添加失败", toast)) {
         setOneClickOpen(false);
-        loadAll();
-      } else {
-        toast.error(res.msg || "一键添加失败");
       }
+      // 真失败也刷:失败常常是建到一半撞的,列表得回到面板真实的样子,
+      // 否则用户是在对着幻影操作。
+      loadAll();
     } catch (e) {
       toast.error("一键添加失败");
     }
