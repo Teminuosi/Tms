@@ -20,7 +20,8 @@ import {
   updateNode,
   deleteNode,
   getNodeInstallCommand,
-  updateConfig
+  updateConfig,
+  getInboundList
 } from "@/api";
 
 interface Node {
@@ -72,6 +73,9 @@ interface NodeForm {
 
 export default function NodePage() {
   const [nodeList, setNodeList] = useState<Node[]>([]);
+  // 建了协议的机器 id。没协议时 sing-box 本来就是停着的(agent 只预装、不启动,
+  // 删光协议也会停掉它),不能报「未运行」。null = 没拿到协议列表,按老样子照报,免得藏住真故障
+  const [inboundNodeIds, setInboundNodeIds] = useState<Set<number> | null>(null);
   const [loading, setLoading] = useState(false);
   const [dialogVisible, setDialogVisible] = useState(false);
   const [dialogTitle, setDialogTitle] = useState('');
@@ -118,6 +122,13 @@ export default function NodePage() {
   // 加载转发机列表
   const loadNodes = async () => {
     setLoading(true);
+    getInboundList()
+      .then((ib: any) => {
+        if (ib.code === 0) {
+          setInboundNodeIds(new Set((ib.data || []).map((x: any) => x.nodeId)));
+        }
+      })
+      .catch(() => {});
     try {
       const res = await getNodeList();
       if (res.code === 0) {
@@ -699,7 +710,8 @@ export default function NodePage() {
                 <CardBody className="pt-0 pb-3">
                   {/* 「在线」只代表 gost 活着。sing-box 是另一个服务,它挂了这里照样绿,
                       但那台机上的协议全都用不了 —— 必须单独标出来 */}
-                  {node.connectionStatus === 'online' && node.singboxRunning === false && (
+                  {node.connectionStatus === 'online' && node.singboxRunning === false
+                    && (inboundNodeIds === null || inboundNodeIds.has(node.id)) && (
                     node.singboxInstalling ? (
                       <div className="mb-3 rounded-lg border border-default-300 bg-default-100 px-2.5 py-2">
                         <div className="text-xs font-medium text-default-600">⏳ sing-box 安装中</div>
