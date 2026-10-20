@@ -8,6 +8,8 @@ export interface Skin {
 }
 
 export const SKINS: Skin[] = [
+  // 跟博客「三月空间」(3yuedaohang.com)同一套:深空黑底 + 紫蓝渐变。颜色在 themes.css
+  { id: "sanyue", name: "三月空间", base: "dark", swatch: "linear-gradient(135deg,#8a6bff,#5b8cff)" },
   { id: "aurora", name: "极光", base: "dark", swatch: "linear-gradient(135deg,#302b63,#a855f7)" },
   { id: "mesh", name: "流光", base: "light", swatch: "linear-gradient(135deg,#c2e9fb,#fbc2eb)" },
   { id: "deepsea", name: "深海", base: "dark", swatch: "linear-gradient(135deg,#0e3a5f,#38bdf8)" },
@@ -24,10 +26,17 @@ export const SKINS: Skin[] = [
   { id: "steel", name: "钢蓝", base: "dark", swatch: "linear-gradient(135deg,#1e293b,#475569)" },
 ];
 
-export const DEFAULT_SKIN = "aurora";
+export const DEFAULT_SKIN = "sanyue";
 
 export function savedSkin(): Skin {
-  const id = typeof localStorage !== "undefined" ? localStorage.getItem("skin") : null;
+  if (typeof localStorage === "undefined") return SKINS[0];
+  let id = localStorage.getItem("skin");
+  // 默认皮肤从 aurora 换成 sanyue 时,老用户存的 "aurora" 多半只是当年的默认值、不是自己选的
+  // (applySkin 每次都会写回 localStorage)。只换这一次;之后再手动选回极光就一直是极光。
+  if (localStorage.getItem("skinDefaultV2") !== "1") {
+    if (id === null || id === "aurora") id = DEFAULT_SKIN;
+    localStorage.setItem("skinDefaultV2", "1");
+  }
   return SKINS.find((s) => s.id === id) ?? SKINS[0];
 }
 

@@ -6,6 +6,51 @@
 html[class] body,
 html[class] #root { background-color: transparent !important; }
 
+/* 三月空间:博客同款。深空底 + 左上紫光 + 右下蓝光;HeroUI 的主色/卡片色只在这套皮肤里改
+   (值是 HSL 三元组,HeroUI 用 hsl(var(--heroui-xxx)) 取),别的皮肤不受影响 */
+html.sanyue {
+  background:
+    radial-gradient(1100px 620px at 8% -12%, rgba(123, 92, 255, .26), transparent 62%),
+    radial-gradient(900px 560px at 100% 112%, rgba(79, 139, 255, .20), transparent 62%),
+    #05070e !important;
+  background-attachment: fixed !important;
+}
+html.sanyue.dark {
+  --heroui-background: 226.7 47.4% 3.7%;
+  --heroui-foreground: 225.9 63% 94.7%;
+  --heroui-content1: 225.7 48.8% 8.4%;
+  --heroui-content2: 224.3 46.9% 9.6%;
+  --heroui-content3: 224.5 43.7% 13.9%;
+  --heroui-content4: 224.6 41.9% 18.2%;
+  --heroui-primary: 251.4 100% 68%;
+  --heroui-primary-foreground: 0 0% 100%;
+  --heroui-secondary: 219.5 100% 65.5%;
+  --heroui-secondary-foreground: 0 0% 100%;
+  --heroui-focus: 251.4 100% 68%;
+  /* 深浅阶:紫色同明度下看着比蓝色暗得多,300 往上是拿来当字色的(如 dark:text-primary-300/400),
+     所以从 300 起直接拉到 75%+,不照搬 HeroUI 蓝色那套阶梯 */
+  --heroui-primary-50: 251.4 100% 10%;
+  --heroui-primary-100: 251.4 100% 18%;
+  --heroui-primary-200: 251.4 100% 28%;
+  --heroui-primary-300: 251.4 100% 75%;
+  --heroui-primary-400: 251.4 100% 78%;
+  --heroui-primary-500: 251.4 100% 82%;
+  --heroui-primary-600: 251.4 100% 86%;
+  --heroui-primary-700: 251.4 100% 90%;
+  --heroui-primary-800: 251.4 100% 94%;
+  --heroui-primary-900: 251.4 100% 97%;
+  --heroui-secondary-50: 219.5 100% 10%;
+  --heroui-secondary-100: 219.5 100% 18%;
+  --heroui-secondary-200: 219.5 100% 28%;
+  --heroui-secondary-300: 219.5 100% 75%;
+  --heroui-secondary-400: 219.5 100% 78%;
+  --heroui-secondary-500: 219.5 100% 82%;
+  --heroui-secondary-600: 219.5 100% 86%;
+  --heroui-secondary-700: 219.5 100% 90%;
+  --heroui-secondary-800: 219.5 100% 94%;
+  --heroui-secondary-900: 219.5 100% 97%;
+}
+
 html.aurora   { background: linear-gradient(135deg, #1f1c3d 0%, #302b63 45%, #7c3aed 100%) fixed !important; }
 html.mesh     { background: linear-gradient(135deg, #c2e9fb 0%, #e0c3fc 50%, #fbc2eb 100%) fixed !important; }
 html.deepsea  { background: linear-gradient(135deg, #04223b 0%, #0e3a5f 50%, #2196c9 100%) fixed !important; }
