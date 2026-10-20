@@ -175,6 +175,16 @@ export default function AdminLayout({
       adminOnly: true
     },
     {
+      path: '/monitor',
+      label: '监控',
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+        </svg>
+      ),
+      adminOnly: true
+    },
+    {
       path: '/config',
       label: '网站配置',
       icon: (
@@ -201,6 +211,7 @@ export default function AdminLayout({
     '/dashboard',   // 0 仪表板
     '/my-sub',      // 车友专属,管理员看不到
     '/node',        // 1 转发机
+    '/monitor',     // 1.5 监控(紧挨转发机)
     '/inbound',     // 2 协议管理
     '/relay',       // 3 中转
     '/landing',     // 3.5 落地(紧挨中转:搭完中转要改出口就来这)

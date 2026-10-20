@@ -12,6 +12,7 @@ import { Progress } from "@heroui/progress";
 import toast from 'react-hot-toast';
 import { copyTextToClipboard } from "@/utils/clipboard";
 import axios from 'axios';
+import NodeMonitorModal from "@/components/node-monitor";
 
 
 import {
@@ -75,6 +76,7 @@ export default function NodePage() {
   const [nodeList, setNodeList] = useState<Node[]>([]);
   // 建了协议的机器 id。没协议时 sing-box 本来就是停着的(agent 只预装、不启动,
   // 删光协议也会停掉它),不能报「未运行」。null = 没拿到协议列表,按老样子照报,免得藏住真故障
+  const [monitorNode, setMonitorNode] = useState<any | null>(null);
   const [inboundNodeIds, setInboundNodeIds] = useState<Set<number> | null>(null);
   const [loading, setLoading] = useState(false);
   const [dialogVisible, setDialogVisible] = useState(false);
@@ -890,6 +892,15 @@ export default function NodePage() {
                       <Button
                         size="sm"
                         variant="flat"
+                        color="secondary"
+                        onPress={() => setMonitorNode(node)}
+                        className="flex-1 min-h-8"
+                      >
+                        监控
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="flat"
                         color="danger"
                         onPress={() => handleDelete(node)}
                         className="flex-1 min-h-8"
@@ -1133,6 +1144,8 @@ export default function NodePage() {
             )}
           </ModalContent>
         </Modal>
+
+        <NodeMonitorModal node={monitorNode} onClose={() => setMonitorNode(null)} />
 
         {/* 安装命令模态框 */}
         <Modal 

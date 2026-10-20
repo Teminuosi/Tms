@@ -5,6 +5,8 @@ import com.admin.common.dto.GostConfigDto;
 import com.admin.common.dto.GostDto;
 import com.admin.common.task.CheckGostConfigAsync;
 import com.admin.entity.Node;
+import com.admin.monitor.MetricCollector;
+import com.admin.monitor.ProbeService;
 import com.admin.service.NodeService;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
@@ -177,6 +179,8 @@ public class WebSocketServer extends TextWebSocketHandler {
                         if (info != null && info.containsKey("singbox_running")) {
                             singboxRunning.put(Long.valueOf(id), info.getBooleanValue("singbox_running"));
                         }
+                        // 攒历史曲线(只动内存,写库在定时任务里)
+                        MetricCollector.onNodeInfo(Long.valueOf(id), info);
                     } catch (Exception ignored) {
                         // 上报格式不对不影响广播,忽略
                     }
@@ -340,6 +344,9 @@ public class WebSocketServer extends TextWebSocketHandler {
                         res.put("type", "status");
                         res.put("data", 1);
                         broadcastMessage(res.toJSONString());
+
+                        // 下发延迟监测目标(异步;老版本节点直接跳过)
+                        ProbeService.onNodeConnected(nodeId, version);
                     } else {
                         log.info("节点 {} 状态更新失败", nodeId);
                     }

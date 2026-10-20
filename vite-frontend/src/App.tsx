@@ -16,6 +16,8 @@ import LandingPage from "@/pages/landing";
 import GuidePage from "@/pages/guide";
 import MySubPage from "@/pages/my-sub";
 import ConfigPage from "@/pages/config";
+import MonitorPage from "@/pages/monitor";
+import StatusPage from "@/pages/status";
 import { SettingsPage } from "@/pages/settings";
 
 import AdminLayout from "@/layouts/admin";
@@ -272,6 +274,16 @@ function App() {
         path="/settings" 
         element={<SettingsPage />}
       />
+      <Route
+        path="/monitor"
+        element={
+          <ProtectedRoute>
+            {isAdmin() ? <MonitorPage /> : <Navigate to="/my-sub" replace />}
+          </ProtectedRoute>
+        }
+      />
+      {/* 公开状态页:不登录也能看,面板里没打开时只显示「未开启」 */}
+      <Route path="/status" element={<StatusPage />} />
     </Routes>
   );
 }

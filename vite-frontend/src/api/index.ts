@@ -28,6 +28,17 @@ export const createNode = (data: any) => Network.post("/node/create", data);
 export const getNodeList = () => Network.post("/node/list");
 export const updateNode = (data: any) => Network.post("/node/update", data);
 export const deleteNode = (id: number) => Network.post("/node/delete", { id });
+// 监控:转发机历史曲线
+export const getNodeMetrics = (nodeId: number, range: string) => Network.post("/monitor/metrics", { nodeId, range });
+export const getNodeProbes = (nodeId: number, range: string) => Network.post("/monitor/probes", { nodeId, range });
+export const getMonitorOverview = () => Network.post("/monitor/overview");
+export const getMonitorSettings = () => Network.post("/monitor/settings/get");
+export const saveMonitorSettings = (data: any) => Network.post("/monitor/settings/save", data);
+export const testMonitorTelegram = () => Network.post("/monitor/settings/test");
+export const saveNodeMeta = (data: any) => Network.post("/monitor/meta/save", data);
+export const getProbeTargets = () => Network.post("/monitor/targets/list");
+export const saveProbeTarget = (data: any) => Network.post("/monitor/targets/save", data);
+export const deleteProbeTarget = (id: number) => Network.post("/monitor/targets/delete", { id });
 export const getNodeInstallCommand = (id: number) => Network.post("/node/install", { id });
 export const checkNodeStatus = (nodeId?: number) => {
   const params = nodeId ? { nodeId } : {};

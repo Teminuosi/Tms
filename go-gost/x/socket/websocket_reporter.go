@@ -53,6 +53,9 @@ type SystemInfo struct {
 	// 提示把人引到了死路上。国内机装的时候从 GitHub 下 sing-box 失败很常见,
 	// 这条正是为那种情况准备的。
 	SingboxInstalled bool `json:"singbox_installed"`
+
+	// Probe 延迟监测最近一轮的结果,只在测完后的下一次上报里带一次(见 probe.go)
+	Probe *ProbeReport `json:"probe,omitempty"`
 }
 
 // NetworkStats 网络统计信息
@@ -332,6 +335,7 @@ func (w *WebSocketReporter) collectSystemInfo() SystemInfo {
 		SingboxInstalled:  isSingboxInstalled(),
 		SingboxInstalling: singboxInstallingNow(),
 		SingboxInstallErr: singboxLastInstallErr(),
+		Probe:             takeProbeReport(),
 	}
 }
 
@@ -613,6 +617,11 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		response.Type = "TcpPingResponse"
 		response.Data = tcpPingResult
 
+	// 延迟监测配置(只存配置,测在旁路 goroutine 里跑)
+	case "SetProbes":
+		err = w.handleSetProbes(cmd.Data)
+		response.Type = "SetProbesResponse"
+
 	// Protocol blocking switches
 	case "SetProtocol":
 		err = w.handleSetProtocol(cmd.Data)
@@ -642,13 +651,20 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 		response.Type = "UnknownCommandResponse"
 	}
 
+	// 只读命令不改 gost 配置,不必重写 gost.json
+	readOnly := cmd.Type == "TcpPing" || cmd.Type == "SetProbes"
+
 	// 发送响应
 	if err != nil {
-		saveConfig()
+		if !readOnly {
+			saveConfig()
+		}
 		response.Success = false
 		response.Message = err.Error()
 	} else {
-		saveConfig()
+		if !readOnly {
+			saveConfig()
+		}
 		response.Success = true
 		response.Message = "OK"
 	}
