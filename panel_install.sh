@@ -201,6 +201,7 @@ show_menu() {
   echo "  6. 查看访问信息(地址/账号)"
   echo "  7. 导出数据库备份"
   echo "  8. 配置域名 + HTTPS"
+  echo "  9. 从备份恢复数据库(搬机器用)"
   echo "  0. 退出"
   echo "==============================================="
 }
@@ -1788,7 +1789,7 @@ main() {
       # 打错命令不能默认去装面板 —— `tms uninstal`(少个 l)、`tms purge2` 这类
       # 手滑会变成一次重装,把正在跑的面板覆盖掉。无参数仍走安装(见上面的 :-install)。
       echo "❌ 未知命令: $1"
-      echo "可用命令: install / update / uninstall / purge / export / status / info / domain / menu"
+      echo "可用命令: install / update / uninstall / purge / export / restore / status / info / domain / menu"
       exit 1
       ;;
   esac
@@ -1808,7 +1809,8 @@ menu_loop() {
       5) show_status ;;
       6) show_access_info ;;
       7) export_migration_sql ;;
-      8) read -rp "备份文件路径: " _f; restore_migration_sql "$_f" ;;
+      # 恢复以前也写成 8),和下面的配置域名撞号 —— case 只认第一个,选 8 一直进的是恢复(2026-10-27 用户报)
+      9) read -rp "备份文件路径: " _f; restore_migration_sql "$_f" ;;
       8)
         show_domain_status
         echo ""
