@@ -183,7 +183,7 @@ func (w *WebSocketReporter) handleGenerateRealityKeypair(data interface{}) (map[
 			_ = json.Unmarshal(b, &req)
 		}
 	}
-	if err := ensureSingboxInstalled(req.Mirror); err != nil {
+	if err := ensureSingboxForCommand(req.Mirror); err != nil {
 		fmt.Printf("🔑 [reality] ensureSingboxInstalled 失败: %v\n", err)
 		return nil, err
 	}
@@ -221,10 +221,62 @@ func parseRealityKeypair(out string) (priv, pub string) {
 
 // ---- 安装 / 配置 / 服务管理 ----
 
-// ensureSingboxInstalled 二进制不存在则下载指定版本并解压
+// 安装本身单独串行。后台预装(websocket_reporter 启动时那个 goroutine)不拿 singboxMu,
+// 原来它和"一键建协议"会同时跑进这里:一个正在写二进制、还没 chmod,另一个看到"文件已存在"
+// 就直接去 exec,报 fork/exec /etc/gost/sing-box: permission denied(2026-10 用户实报)。
+// 另起一把锁而不是让预装也拿 singboxMu:配置下发/生成密钥本来就要等装好才能干活,
+// 拿同一把锁只会让"装完之前"的其它 sing-box 操作(删除、查询)也跟着卡住。
+var singboxInstallMu sync.Mutex
+
+// singboxUsable 二进制在、非空、能执行。
+// 有文件但没执行权限:多半是老版本节点程序装到一半被打断(写完文件还没 chmod 进程就重启了,
+// 或者所有源都在解压中途失败、留下半截文件)。先补权限再跑一次 version 确认是完整的,
+// 跑不起来就删掉,让调用方重新下载 —— 不删的话这台机以后每次都 permission denied,永远好不了。
+// 权限本来就对的(绝大多数已在用的节点)直接返回 true,行为和以前一样,不多跑任何命令。
+func singboxUsable(bin string) bool {
+	fi, err := os.Stat(bin)
+	if err != nil || fi.Size() == 0 {
+		return false
+	}
+	if fi.Mode().Perm()&0o111 != 0 {
+		return true
+	}
+	fmt.Println("⚠️ sing-box 二进制没有执行权限(上次安装可能被打断),补上权限并检查是否完整")
+	if err := os.Chmod(bin, 0o755); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if out, err := exec.CommandContext(ctx, bin, "version").CombinedOutput(); err == nil && strings.Contains(string(out), "sing-box") {
+			return true
+		}
+	}
+	fmt.Println("⚠️ 现有 sing-box 二进制不完整,删掉重新下载")
+	os.Remove(bin)
+	return false
+}
+
+// 面板命令在节点上是单线程顺序处理的,而面板等回复只等 10 秒。后台预装正在下载时,
+// 建协议的命令如果也排队等它装完,会把这台节点的所有面板命令都堵住,最后还只报一句「等待响应超时」。
+// 所以面板来的命令发现正在装,就立刻回一句人话,让用户稍后重试。
+var errSingboxInstalling = fmt.Errorf("这台转发机正在下载安装 sing-box(刚装好的转发机一般要 1~2 分钟,国内机可能更久),装完再试一次")
+
+// ensureSingboxForCommand 正在装就立刻返回 errSingboxInstalling,不排队等。
+// 只给「生成 Reality 密钥」用(用户在界面上点的,失败了会看到、会重试)。
+// 下发配置(SetSingboxConfig)不用它:那条照旧排队等装完 —— 面板超时后节点仍会把配置写进去,
+// 改成立刻报错的话,节点重连时面板自动重推的配置就会被丢掉。
+func ensureSingboxForCommand(mirror string) error {
+	if installing, _ := SingboxProgress(); installing {
+		return errSingboxInstalling
+	}
+	return ensureSingboxInstalled(mirror)
+}
+
+// ensureSingboxInstalled 二进制不存在(或不能用)则下载指定版本并解压
 func ensureSingboxInstalled(mirror string) error {
+	singboxInstallMu.Lock()
+	defer singboxInstallMu.Unlock()
+
 	bin := singboxBinPath()
-	if fi, err := os.Stat(bin); err == nil && fi.Size() > 0 {
+	if singboxUsable(bin) {
 		return nil
 	}
 
@@ -243,16 +295,13 @@ func ensureSingboxInstalled(mirror string) error {
 			fmt.Printf("⚠️ 下载 sing-box 失败,换下一个源: %v\n", lastErr)
 			continue
 		}
-		if err := extractSingboxBinary(tmp, bin); err != nil {
+		if err := installSingboxFromArchive(tmp, bin); err != nil {
 			os.Remove(tmp)
 			lastErr = fmt.Errorf("%s 解压失败: %v", url, err)
 			fmt.Printf("⚠️ %v,换下一个源\n", lastErr)
 			continue
 		}
 		os.Remove(tmp)
-		if err := os.Chmod(bin, 0o755); err != nil {
-			return fmt.Errorf("给 sing-box 加执行权限失败: %v", err)
-		}
 		fmt.Printf("✅ sing-box %s 安装完成(源: %s)\n", singboxVersion, url)
 		return nil
 	}
@@ -379,6 +428,28 @@ func downloadFile(url, dest string) error {
 	return nil
 }
 
+// installSingboxFromArchive 解压到同目录的临时文件 → 加执行权限 → 原子改名成正式文件。
+// 【为什么不直接解压到正式路径】那样文件会先以 0644 出现、写到一半时就"存在且非空",
+// 任何同时在看它的人(别的协程、重启后的自己)都会把半成品当成装好了。
+// 改名在同一目录内是原子的:正式路径上要么没有文件,要么是完整、可执行的那个。
+func installSingboxFromArchive(tarGzPath, dest string) error {
+	part := dest + ".part"
+	os.Remove(part)
+	if err := extractSingboxBinary(tarGzPath, part); err != nil {
+		os.Remove(part)
+		return err
+	}
+	if err := os.Chmod(part, 0o755); err != nil {
+		os.Remove(part)
+		return fmt.Errorf("给 sing-box 加执行权限失败: %v", err)
+	}
+	if err := os.Rename(part, dest); err != nil {
+		os.Remove(part)
+		return fmt.Errorf("替换 sing-box 二进制失败: %v", err)
+	}
+	return nil
+}
+
 // extractSingboxBinary 从 sing-box release 的 tar.gz 里抽出 sing-box 二进制
 // 归档结构形如 sing-box-1.13.12-linux-amd64/sing-box
 func extractSingboxBinary(tarGzPath, dest string) error {
@@ -408,11 +479,13 @@ func extractSingboxBinary(tarGzPath, dest string) error {
 			if err != nil {
 				return err
 			}
-			defer out.Close()
 			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
 				return err
 			}
-			return nil
+			// 显式关闭并检查:写盘失败(比如磁盘满)有时到 Close 才报出来,
+			// 原来 defer 掉了这个错误,半截文件会被当成装好了
+			return out.Close()
 		}
 	}
 	return fmt.Errorf("归档里没找到 sing-box 二进制")
