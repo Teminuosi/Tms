@@ -10,7 +10,7 @@ import { copyTextToClipboard } from '@/utils/clipboard';
 import { Logo } from '@/components/icons';
 import { updatePassword, getVersionInfo } from '@/api';
 import { safeLogout } from '@/utils/logout';
-import { siteConfig, SITE_CONFIG_UPDATED } from '@/config/site';
+import { siteConfig, SITE_CONFIG_UPDATED, CLIENT_DOWNLOAD_URL } from '@/config/site';
 import SkinPicker from '@/components/skin-picker';
 
 interface MenuItem {
@@ -20,6 +20,8 @@ interface MenuItem {
   adminOnly?: boolean;
   /** 只给子账号(车友)看:管理员不显示,避免和管理页重复 */
   userOnly?: boolean;
+  /** 外链:点了在新窗口打开,不走路由 */
+  href?: string;
 }
 
 interface PasswordForm {
@@ -203,6 +205,17 @@ export default function AdminLayout({
         </svg>
       ),
       adminOnly: true
+    },
+    {
+      path: '/client-download',   // 只当 key 用,点了走 href
+      label: 'TMS 客户端',
+      href: CLIENT_DOWNLOAD_URL,
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+          <path fillRule="evenodd" d="M3 5a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2h-2.22l.123.489.804.804A1 1 0 0113 18H7a1 1 0 01-.707-1.707l.804-.804L7.22 15H5a2 2 0 01-2-2V5zm5.771 7H5V5h10v7H8.771z" clipRule="evenodd" />
+        </svg>
+      ),
+      adminOnly: true
     }
   ];
 
@@ -221,6 +234,7 @@ export default function AdminLayout({
     '/forward',     // 7 转发
     '/config',
     '/guide',
+    '/client-download',
   ];
   menuItems.sort((a, b) => {
     const ia = MENU_ORDER.indexOf(a.path);
@@ -278,8 +292,9 @@ export default function AdminLayout({
   };
 
   // 菜单点击处理
-  const handleMenuClick = (path: string) => {
-    navigate(path);
+  const handleMenuClick = (path: string, href?: string) => {
+    if (href) window.open(href, '_blank', 'noopener,noreferrer');
+    else navigate(path);
     if (isMobile) {
       hideMobileMenu();
     }
@@ -412,7 +427,7 @@ export default function AdminLayout({
               return (
                 <li key={item.path}>
                                      <button
-                     onClick={() => handleMenuClick(item.path)}
+                     onClick={() => handleMenuClick(item.path, item.href)}
                      className={`
                        w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left
                        transition-colors duration-200 min-h-[44px]
@@ -426,6 +441,7 @@ export default function AdminLayout({
                        {item.icon}
                      </div>
                      <span className="font-medium text-sm">{item.label}</span>
+                     {item.href && <span className="ml-auto text-xs text-default-400" aria-hidden="true">↗</span>}
                    </button>
                 </li>
               );
