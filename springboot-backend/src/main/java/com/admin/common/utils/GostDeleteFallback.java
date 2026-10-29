@@ -59,6 +59,28 @@ public final class GostDeleteFallback {
     }
 
     /**
+     * 暂停 / 恢复 / 更新用:先按原名发(和以前发给节点的命令一字不差),
+     * 节点回「原名 not found」才换下一个候选名(_0)再发。
+     * gost 的 Pause/Resume/Update 都是先校验全部名字存在再动手,回 not found 时节点上什么都没改,换名重发是安全的。
+     * 所有候选都 not found 时返回原名那次的结果 —— 调用方原有的 not found 处理(如更新时转去按原名 Add)照旧。
+     * 离线、超时等其它错误不换名,原样返回。
+     */
+    public static GostDto firstFound(List<String> candidates, Function<String, GostDto> op) {
+        GostDto first = null;
+        for (int i = 0; i < candidates.size(); i++) {
+            String name = candidates.get(i);
+            GostDto r = op.apply(name);
+            if (i == 0) {
+                first = r;
+            }
+            if (!isNotFound(r, name)) {
+                return r;
+            }
+        }
+        return first;
+    }
+
+    /**
      * @param candidates candidateNames 的结果,第一个是原名
      * @param whole      原来的整条删除命令(按名字)
      * @param pieces     逐个子服务删除(如 _tcp、_udp 各一条);只有一个实体时传空列表

@@ -12,6 +12,7 @@ import com.admin.service.TunnelService;
 import com.admin.service.UserTunnelService;
 import com.admin.service.ForwardService;
 import com.admin.service.NodeService;
+import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
 import com.admin.entity.Forward;
 import com.admin.entity.Tunnel;
@@ -26,6 +27,7 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -300,30 +302,36 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
             Node inNode = nodeService.getById(tunnel.getInNodeId());
             Node outNode = nodeService.getById(tunnel.getOutNodeId());
             
-            String serviceName = buildServiceName(forward.getId(), Long.valueOf(userId), userTunnelId);
-            
+            // 先按原名删,原名 not found 才按 _0 逐个确认(GostDeleteFallback)——
+            // 协议/线路/分给车友的转发建的时候恒为 _0,按 user_tunnel id 拼的名字对不上
+            List<String> names = GostDeleteFallback.candidateNames(forward.getId(), userId, userTunnelId);
+
             // 1. 先删除主服务
             if (inNode != null) {
                 try {
-                    GostUtil.DeleteService(inNode.getId(), serviceName);
+                    Long inNodeId = inNode.getId();
+                    GostDeleteFallback.delete(names,
+                            n -> GostUtil.DeleteService(inNodeId, n),
+                            Arrays.asList(n -> GostUtil.DeleteOneService(inNodeId, n + "_tcp"),
+                                    n -> GostUtil.DeleteOneService(inNodeId, n + "_udp")));
                 } catch (Exception e) {
                     // 主服务删除失败，记录但继续
                 }
             }
-            
+
             // 2. 如果是隧道转发，删除远端服务
             if (tunnel.getType() == 1 && outNode != null && !outNode.getId().equals(inNode != null ? inNode.getId() : null)) {
                 try {
-                    GostUtil.DeleteRemoteService(outNode.getId(), serviceName);
+                    GostUtil.DeleteRemoteService(outNode.getId(), names.get(0));
                 } catch (Exception e) {
                     // 远端服务删除失败，记录但继续
                 }
             }
-            
+
             // 3. 如果是隧道转发，最后删除转发链
             if (tunnel.getType() == 1 && inNode != null) {
                 try {
-                    GostUtil.DeleteChains(inNode.getId(), serviceName);
+                    GostUtil.DeleteChains(inNode.getId(), names.get(0));
                 } catch (Exception e) {
                     // 转发链删除失败，记录但继续
                 }

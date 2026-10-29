@@ -614,25 +614,30 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         }
 
         // 8. 调用Gost服务
-        String serviceName = buildServiceName(forward.getId(), forward.getUserId(), userTunnel);
+        // 先按原名(buildServiceName)发;节点回「这个名字 not found」才按 _0 再发一次 ——
+        // 协议/线路的转发建的时候恒为 _0,车友在那条隧道上另有 user_tunnel 时原名对不上,以前停不掉也恢复不了。
+        List<String> names = serviceNameCandidates(forward, userTunnel);
+        Long inNodeId = nodeInfo.getInNode().getId();
         GostDto gostResult;
 
         if ("PauseService".equals(gostMethod)) {
-            gostResult = GostUtil.PauseService(nodeInfo.getInNode().getId(), serviceName);
+            gostResult = GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(inNodeId, n));
 
             // 隧道转发需要同时暂停远端服务
             if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD && nodeInfo.getOutNode() != null) {
-                GostDto remoteResult = GostUtil.PauseRemoteService(nodeInfo.getOutNode().getId(), serviceName);
+                Long outNodeId = nodeInfo.getOutNode().getId();
+                GostDto remoteResult = GostDeleteFallback.firstFound(names, n -> GostUtil.PauseRemoteService(outNodeId, n));
                 if (!isGostOperationSuccess(remoteResult)) {
                     return R.err(operation + "远端服务失败：" + remoteResult.getMsg());
                 }
             }
         } else {
-            gostResult = GostUtil.ResumeService(nodeInfo.getInNode().getId(), serviceName);
+            gostResult = GostDeleteFallback.firstFound(names, n -> GostUtil.ResumeService(inNodeId, n));
 
             // 隧道转发需要同时恢复远端服务
             if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD && nodeInfo.getOutNode() != null) {
-                GostDto remoteResult = GostUtil.ResumeRemoteService(nodeInfo.getOutNode().getId(), serviceName);
+                Long outNodeId = nodeInfo.getOutNode().getId();
+                GostDto remoteResult = GostDeleteFallback.firstFound(names, n -> GostUtil.ResumeRemoteService(outNodeId, n));
                 if (!isGostOperationSuccess(remoteResult)) {
                     return R.err(operation + "远端服务失败：" + remoteResult.getMsg());
                 }
@@ -1246,17 +1251,18 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
      * 更新Gost服务
      */
     private R updateGostServices(Forward forward, Tunnel tunnel, Integer limiter, NodeInfo nodeInfo, UserTunnel userTunnel) {
-        String serviceName = buildServiceName(forward.getId(), forward.getUserId(), userTunnel);
+        // 第一个是原名;原名 not found 时先按 _0 更新,都没有才和以前一样按原名新建
+        List<String> names = serviceNameCandidates(forward, userTunnel);
 
         // 隧道转发需要更新链和远程服务
         if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD) {
-            R chainResult = updateChainService(nodeInfo.getInNode(), serviceName, tunnel.getOutIp(), forward.getOutPort(), tunnel.getProtocol(), tunnel.getInterfaceName());
+            R chainResult = updateChainService(nodeInfo.getInNode(), names, tunnel.getOutIp(), forward.getOutPort(), tunnel.getProtocol(), tunnel.getInterfaceName());
             if (chainResult.getCode() != 0) {
                 updateForwardStatusToError(forward);
                 return chainResult;
             }
 
-            R remoteResult = updateRemoteService(nodeInfo.getOutNode(), serviceName, forward, tunnel.getProtocol(), forward.getInterfaceName());
+            R remoteResult = updateRemoteService(nodeInfo.getOutNode(), names, forward, tunnel.getProtocol(), forward.getInterfaceName());
             if (remoteResult.getCode() != 0) {
                 updateForwardStatusToError(forward);
                 return remoteResult;
@@ -1268,7 +1274,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             interfaceName = forward.getInterfaceName();
         }
         // 更新主服务
-        R serviceResult = updateMainService(nodeInfo.getInNode(), serviceName, forward, limiter, tunnel.getType(), tunnel, forward.getStrategy(), interfaceName);
+        R serviceResult = updateMainService(nodeInfo.getInNode(), names, forward, limiter, tunnel.getType(), tunnel, forward.getStrategy(), interfaceName);
         if (serviceResult.getCode() != 0) {
             updateForwardStatusToError(forward);
             return serviceResult;
@@ -1310,16 +1316,21 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     private R deleteOldGostServices(Forward forward, Tunnel oldTunnel) {
         // 获取原隧道的用户隧道关系
         UserTunnel oldUserTunnel = getUserTunnel(forward.getUserId(), oldTunnel.getId().intValue());
-        String serviceName = buildServiceName(forward.getId(), forward.getUserId(), oldUserTunnel);
+        // 先按原名删,原名 not found 才按 _0 逐个确认(同 deleteGostServices)
+        List<String> names = serviceNameCandidates(forward, oldUserTunnel);
 
         // 获取原隧道的节点信息
         NodeInfo oldNodeInfo = getRequiredNodes(oldTunnel);
 
         // 删除主服务（使用原隧道的入口节点）
         if (!oldNodeInfo.isHasError() && oldNodeInfo.getInNode() != null) {
-            GostDto serviceResult = GostUtil.DeleteService(oldNodeInfo.getInNode().getId(), serviceName);
-            if (!isGostOperationSuccess(serviceResult)) {
-                log.info("删除主服务失败: {}", serviceResult.getMsg());
+            Long inNodeId = oldNodeInfo.getInNode().getId();
+            String err = GostDeleteFallback.delete(names,
+                    n -> GostUtil.DeleteService(inNodeId, n),
+                    Arrays.asList(n -> GostUtil.DeleteOneService(inNodeId, n + "_tcp"),
+                            n -> GostUtil.DeleteOneService(inNodeId, n + "_udp")));
+            if (err != null) {
+                log.info("删除主服务失败: {}", err);
             }
         }
 
@@ -1327,9 +1338,10 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         if (oldTunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD) {
             // 删除链服务
             if (!oldNodeInfo.isHasError() && oldNodeInfo.getInNode() != null) {
-                GostDto chainResult = GostUtil.DeleteChains(oldNodeInfo.getInNode().getId(), serviceName);
-                if (!isGostOperationSuccess(chainResult)) {
-                    log.info("删除链服务失败: {}", chainResult.getMsg());
+                Long inNodeId = oldNodeInfo.getInNode().getId();
+                String err = GostDeleteFallback.delete(names, n -> GostUtil.DeleteChains(inNodeId, n), Collections.emptyList());
+                if (err != null) {
+                    log.info("删除链服务失败: {}", err);
                 }
             }
 
@@ -1343,9 +1355,10 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             }
 
             if (outNode != null) {
-                GostDto remoteResult = GostUtil.DeleteRemoteService(outNode.getId(), serviceName);
-                if (!isGostOperationSuccess(remoteResult)) {
-                    log.info("删除远程服务失败: {}", remoteResult.getMsg());
+                Long outNodeId = outNode.getId();
+                String err = GostDeleteFallback.delete(names, n -> GostUtil.DeleteRemoteService(outNodeId, n), Collections.emptyList());
+                if (err != null) {
+                    log.info("删除远程服务失败: {}", err);
                 }
             }
         }
@@ -1422,13 +1435,15 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     /**
      * 更新链服务
      */
-    private R updateChainService(Node inNode, String serviceName, String outIp, Integer outPort, String protocol, String interfaceName) {
+    private R updateChainService(Node inNode, List<String> names, String outIp, Integer outPort, String protocol, String interfaceName) {
+        String serviceName = names.get(0);
         // 创建新链
         String remoteAddr = outIp + ":" + outPort;
         if (outIp.contains(":")) {
             remoteAddr = "[" + outIp + "]:" + outPort;
         }
-        GostDto createResult = GostUtil.UpdateChains(inNode.getId(), serviceName, remoteAddr, protocol, interfaceName);
+        String addr = remoteAddr;
+        GostDto createResult = GostDeleteFallback.firstFound(names, n -> GostUtil.UpdateChains(inNode.getId(), n, addr, protocol, interfaceName));
         if (createResult.getMsg().contains(GOST_NOT_FOUND_MSG)) {
             createResult = GostUtil.AddChains(inNode.getId(), serviceName, remoteAddr, protocol, interfaceName);
         }
@@ -1438,9 +1453,10 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     /**
      * 更新远程服务
      */
-    private R updateRemoteService(Node outNode, String serviceName, Forward forward, String protocol, String interfaceName) {
+    private R updateRemoteService(Node outNode, List<String> names, Forward forward, String protocol, String interfaceName) {
+        String serviceName = names.get(0);
         // 创建新远程服务
-        GostDto createResult = GostUtil.UpdateRemoteService(outNode.getId(), serviceName, forward.getOutPort(), forward.getRemoteAddr(), protocol, forward.getStrategy(), interfaceName);
+        GostDto createResult = GostDeleteFallback.firstFound(names, n -> GostUtil.UpdateRemoteService(outNode.getId(), n, forward.getOutPort(), forward.getRemoteAddr(), protocol, forward.getStrategy(), interfaceName));
         if (createResult.getMsg().contains(GOST_NOT_FOUND_MSG)) {
             createResult = GostUtil.AddRemoteService(outNode.getId(), serviceName, forward.getOutPort(), forward.getRemoteAddr(), protocol, forward.getStrategy(), interfaceName);
         }
@@ -1450,8 +1466,9 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     /**
      * 更新主服务
      */
-    private R updateMainService(Node inNode, String serviceName, Forward forward, Integer limiter, Integer tunnelType, Tunnel tunnel, String strategy, String interfaceName) {
-        GostDto result = GostUtil.UpdateService(inNode.getId(), serviceName, forward.getInPort(), limiter, forward.getRemoteAddr(), tunnelType, tunnel, strategy, interfaceName);
+    private R updateMainService(Node inNode, List<String> names, Forward forward, Integer limiter, Integer tunnelType, Tunnel tunnel, String strategy, String interfaceName) {
+        String serviceName = names.get(0);
+        GostDto result = GostDeleteFallback.firstFound(names, n -> GostUtil.UpdateService(inNode.getId(), n, forward.getInPort(), limiter, forward.getRemoteAddr(), tunnelType, tunnel, strategy, interfaceName));
 
         if (result.getMsg().contains(GOST_NOT_FOUND_MSG)) {
             result = GostUtil.AddService(inNode.getId(), serviceName, forward.getInPort(), limiter, forward.getRemoteAddr(), tunnelType, tunnel, strategy, interfaceName);
@@ -1653,6 +1670,15 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     private String buildServiceName(Long forwardId, Integer userId, UserTunnel userTunnel) {
         int userTunnelId = (userTunnel != null) ? userTunnel.getId() : 0;
         return forwardId + "_" + userId + "_" + userTunnelId;
+    }
+
+    /**
+     * 暂停/恢复/更新/删除时用的候选服务名:第一个就是 buildServiceName(原来的拼法),
+     * 有 user_tunnel 时再加上 _0(createForwardForUser 建的协议/线路/分给车友的转发恒为 _0)。
+     */
+    private List<String> serviceNameCandidates(Forward forward, UserTunnel userTunnel) {
+        return GostDeleteFallback.candidateNames(forward.getId(), forward.getUserId(),
+                userTunnel != null ? userTunnel.getId() : null);
     }
 
 

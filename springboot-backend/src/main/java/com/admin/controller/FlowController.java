@@ -6,6 +6,7 @@ import com.admin.common.dto.GostConfigDto;
 import com.admin.common.lang.R;
 import com.admin.common.task.CheckGostConfigAsync;
 import com.admin.common.utils.AESCrypto;
+import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
 import com.admin.entity.*;
 import com.alibaba.fastjson.JSON;
@@ -447,10 +448,12 @@ public class FlowController extends BaseController {
         for (Forward forward : forwardList) {
             Tunnel tunnel = tunnelService.getById(forward.getTunnelId());
             if (tunnel != null){
-                String svc = serviceNameOf(forward);
-                GostUtil.PauseService(tunnel.getInNodeId(), svc);
+                // 先按原名停,节点回「原名 not found」才按 _0 再停 ——
+                // 协议/线路转发建的时候恒为 _0,车友在那条隧道上另有 user_tunnel 时原名对不上
+                List<String> names = serviceNamesOf(forward);
+                GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(tunnel.getInNodeId(), n));
                 if (tunnel.getType() == 2){
-                    GostUtil.PauseRemoteService(tunnel.getOutNodeId(), svc);
+                    GostDeleteFallback.firstFound(names, n -> GostUtil.PauseRemoteService(tunnel.getOutNodeId(), n));
                 }
             }
             forward.setStatus(0);
@@ -462,8 +465,9 @@ public class FlowController extends BaseController {
      * 这条转发在 gost 上的服务名。
      * 协议/中转的转发没有 user_tunnel,userTunnelId 恒为 0;老隧道业务要按
      * (userId, tunnelId) 反查 UserTunnel 拿 id —— Forward 表本身不存这个字段。
+     * 返回候选名:第一个是原来的拼法,有 user_tunnel 时再加 _0(见 GostDeleteFallback.firstFound)。
      */
-    private String serviceNameOf(Forward forward) {
+    private List<String> serviceNamesOf(Forward forward) {
         int userTunnelId = 0;
         try {
             UserTunnel ut = userTunnelService.getOne(new QueryWrapper<UserTunnel>()
@@ -478,7 +482,7 @@ public class FlowController extends BaseController {
             // 这里失败也不能让整批暂停中断。
             log.warn("查 user_tunnel 失败,转发[{}]按 userTunnelId=0 处理: {}", forward.getId(), e.getMessage());
         }
-        return forward.getId() + "_" + forward.getUserId() + "_" + userTunnelId;
+        return GostDeleteFallback.candidateNames(forward.getId(), forward.getUserId(), userTunnelId);
     }
 
     private FlowDto filterFlowData(FlowDto flowDto, Forward forward, int flowType) {
