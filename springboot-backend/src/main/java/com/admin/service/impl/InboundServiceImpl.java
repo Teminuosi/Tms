@@ -28,6 +28,7 @@ import com.admin.service.TunnelService;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -1592,7 +1593,16 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         Tunnel tunnel = tunnelMapper.selectOne(new QueryWrapper<Tunnel>()
                 .eq("in_node_id", nodeId).eq("type", TUNNEL_TYPE_PORT_FORWARD)
                 .eq("name", name).last("limit 1"));
+        // 【IPv6 机器】默认监听 0.0.0.0,节点程序(gost)看到 0.0.0.0 就只开 IPv4 监听(go-gost/x/internal/net/net.go
+        // IsIPv4 → tcp4/udp4),只有 IPv6 的机器上客户端根本连不进来。粉丝反馈「v6 机器 TMS 的节点不通、
+        // S-UI 的能通」(S-UI 监听 ::)(2026-10-28)。
+        // 只对「节点地址是 IPv6」的机器改成 [::](双栈):IPv4 机器一个字节都不变 —— 有的 VPS 关了 IPv6,
+        // 那里绑 [::] 会失败,不能动老用户。IPv6 机器上原来就不通,改了不会影响正在用的人。
+        boolean v6Node = isIpv6Node(nodeId);
         if (tunnel != null) {
+            if (v6Node) {
+                tunnel = upgradeTunnelToDualStack(tunnel);
+            }
             return tunnel;
         }
         TunnelDto tdto = new TunnelDto();
@@ -1602,12 +1612,54 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         tdto.setFlow(1);
         tdto.setTrafficRatio(BigDecimal.ONE);
         tdto.setProtocol("tls");
+        if (v6Node) {
+            tdto.setTcpListenAddr(DUAL_STACK_LISTEN);
+            tdto.setUdpListenAddr(DUAL_STACK_LISTEN);
+        }
         R r = tunnelService.createTunnel(tdto);
         if (r.getCode() != 0) {
             return null;
         }
         return tunnelMapper.selectOne(new QueryWrapper<Tunnel>()
                 .eq("in_node_id", nodeId).eq("type", TUNNEL_TYPE_PORT_FORWARD).last("limit 1"));
+    }
+
+    /** IPv6 机器上转发要监听的地址:[::] 让 gost 用双栈 tcp/udp(还能顺带收 IPv4) */
+    private static final String DUAL_STACK_LISTEN = "[::]";
+
+    /** 节点登记的地址是 IPv6 字面量 = 这是台 IPv6 机器 */
+    private boolean isIpv6Node(Long nodeId) {
+        Node node = nodeMapper.selectById(nodeId);
+        return node != null && SingboxUtil.isIpv6Literal(node.getServerIp());
+    }
+
+    /**
+     * IPv6 机器上已有、还监听 0.0.0.0 的自动隧道 → 只在【隧道上一条转发都没有】时改成 [::]。
+     *
+     * 【为什么不升级有转发的隧道】要让已有转发换监听地址只能让节点重新下发,而节点程序(gost)更新服务是
+     * 「先关旧监听、再起新的」,tcp/udp 逐条处理、中途失败就停、不回滚 —— 新地址一旦绑不上,原来的 IPv4 监听
+     * 已经没了,线路断掉且推不回来(2026-10-28 四轮真跑验收:限速被清、暂停被恢复、重试死循环、推回失败……)。
+     * 「不能影响老用户」→ 有转发的一律不动:只有 IPv6 的机器上这些线路本来就不通;靠域名走 IPv4 的照常能用。
+     * 想修好的 IPv6 机器:删掉这台机器上的协议/线路(本来就用不了),再一键重建,这里看到空隧道就会升级。
+     * 没有转发 = 节点上没有要动的服务,只改库,零风险。只改值为 0.0.0.0 的列,用户手改过的地址不动。
+     */
+    private Tunnel upgradeTunnelToDualStack(Tunnel tunnel) {
+        boolean tcpOld = "0.0.0.0".equals(tunnel.getTcpListenAddr());
+        boolean udpOld = "0.0.0.0".equals(tunnel.getUdpListenAddr());
+        if (!tcpOld && !udpOld) {
+            return tunnel;
+        }
+        long forwards = forwardService.count(new QueryWrapper<Forward>().eq("tunnel_id", tunnel.getId()));
+        if (forwards > 0) {
+            return tunnel;
+        }
+        // 只 SET 这两列(不能 new Tunnel() 再 updateById:Tunnel.flow 是 int,默认 0 会被一起写进去)
+        LambdaUpdateWrapper<Tunnel> uw = new LambdaUpdateWrapper<Tunnel>().eq(Tunnel::getId, tunnel.getId());
+        if (tcpOld) uw.eq(Tunnel::getTcpListenAddr, "0.0.0.0").set(Tunnel::getTcpListenAddr, DUAL_STACK_LISTEN);
+        if (udpOld) uw.eq(Tunnel::getUdpListenAddr, "0.0.0.0").set(Tunnel::getUdpListenAddr, DUAL_STACK_LISTEN);
+        tunnelMapper.update(null, uw);
+        Tunnel fresh = tunnelMapper.selectById(tunnel.getId());
+        return fresh != null ? fresh : tunnel;
     }
 
     /** 分配 sing-box 本机监听口(40000+,避开 gost 公网口段) */

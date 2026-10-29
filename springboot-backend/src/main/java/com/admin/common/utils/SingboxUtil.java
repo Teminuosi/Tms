@@ -87,7 +87,7 @@ public class SingboxUtil {
         } catch (Exception e) {
             frag = "";
         }
-        return "vless://" + uuid + "@" + serverIp + ":" + port
+        return "vless://" + uuid + "@" + uriHost(serverIp) + ":" + port
                 + "?encryption=none&flow=xtls-rprx-vision&security=reality"
                 + "&sni=" + (sni == null ? "" : sni)
                 + "&fp=chrome"
@@ -205,7 +205,7 @@ public class SingboxUtil {
     public static String buildShadowsocksLink(String serverIp, Integer port, String method, String password, String remark) {
         String userinfo = Base64.getUrlEncoder().withoutPadding()
                 .encodeToString((method + ":" + password).getBytes(StandardCharsets.UTF_8));
-        return "ss://" + userinfo + "@" + serverIp + ":" + port + "#" + urlEncode(remark);
+        return "ss://" + userinfo + "@" + uriHost(serverIp) + ":" + port + "#" + urlEncode(remark);
     }
 
     private static JSONObject parseConfig(String configJson) {
@@ -217,6 +217,25 @@ public class SingboxUtil {
         } catch (Exception e) {
             return new JSONObject();
         }
+    }
+
+    /**
+     * 分享链接里的主机名:IPv6 字面量要包方括号(vless://uuid@[2001:db8::1]:443),
+     * 否则客户端把最后一段冒号当端口,解析成错的地址。IPv4 / 域名原样返回 —— 老链接一个字都不变。
+     * 粉丝反馈「v6 机器 TMS 出的节点不通、S-UI 的能通」(2026-10-28)。
+     */
+    public static String uriHost(String host) {
+        if (host == null) return null;
+        String h = host.trim();
+        if (h.indexOf(':') >= 0 && !h.startsWith("[")) return "[" + h + "]";
+        return host;
+    }
+
+    /** 节点地址是不是 IPv6 字面量(含冒号、或已带方括号)。域名 / IPv4 都是 false */
+    public static boolean isIpv6Literal(String host) {
+        if (host == null) return false;
+        String h = host.trim();
+        return h.indexOf(':') >= 0 || h.startsWith("[");
     }
 
     private static String urlEncode(String s) {
@@ -374,7 +393,7 @@ public class SingboxUtil {
     /** Trojan + Reality 客户端链接 */
     public static String buildTrojanRealityLink(String password, String serverIp, Integer port,
                                                 String sni, String publicKey, String shortId, String remark) {
-        return "trojan://" + password + "@" + serverIp + ":" + port
+        return "trojan://" + password + "@" + uriHost(serverIp) + ":" + port
                 + "?security=reality"
                 + "&sni=" + (sni == null ? "" : sni)
                 + "&fp=chrome"
@@ -472,20 +491,20 @@ public class SingboxUtil {
 
     /** Hysteria2 客户端链接 */
     public static String buildHysteria2Link(String password, String serverIp, Integer port, String sni, String remark) {
-        return "hysteria2://" + password + "@" + serverIp + ":" + port
+        return "hysteria2://" + password + "@" + uriHost(serverIp) + ":" + port
                 + "?sni=" + (sni == null ? "" : sni) + "&insecure=1#" + urlEncode(remark);
     }
 
     /** TUIC 客户端链接 */
     public static String buildTuicLink(String uuid, String password, String serverIp, Integer port, String sni, String remark) {
-        return "tuic://" + uuid + ":" + password + "@" + serverIp + ":" + port
+        return "tuic://" + uuid + ":" + password + "@" + uriHost(serverIp) + ":" + port
                 + "?congestion_control=bbr&alpn=h3&sni=" + (sni == null ? "" : sni)
                 + "&allow_insecure=1#" + urlEncode(remark);
     }
 
     /** AnyTLS 客户端链接 */
     public static String buildAnyTlsLink(String password, String serverIp, Integer port, String sni, String remark) {
-        return "anytls://" + password + "@" + serverIp + ":" + port
+        return "anytls://" + password + "@" + uriHost(serverIp) + ":" + port
                 + "?insecure=1&sni=" + (sni == null ? "" : sni) + "#" + urlEncode(remark);
     }
 }
