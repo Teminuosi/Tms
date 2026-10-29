@@ -31,11 +31,15 @@ SVC_RE = re.compile(r'^(\d+)_(\d+)_(\d+)_(tcp|udp|tls)$')
 CHAIN_RE = re.compile(r'^(\d+)_(\d+)_(\d+)_chains$')
 
 
-def run_sql(cmd, sql):
+def run_sql(cmd, sql, missing_table=None):
+    """missing_table 不为空时:库里没有这张表就返回 None(老部署可能根本没建过),其它错误照常退出。"""
     p = subprocess.run(shlex.split(cmd), input=sql.encode('utf-8'),
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if p.returncode != 0:
-        sys.exit('查库失败: ' + p.stderr.decode('utf-8', 'replace'))
+        err = p.stderr.decode('utf-8', 'replace')
+        if missing_table and missing_table in err and "doesn't exist" in err:
+            return None
+        sys.exit('查库失败: ' + err)
     lines = [l for l in p.stdout.decode('utf-8', 'replace').splitlines() if l.strip()]
     if not lines:
         return []
@@ -62,8 +66,13 @@ def main():
     forwards = run_sql(a.mysql, "SELECT f.id, f.user_id, f.name, f.tunnel_id, f.status, f.speed_id, f.in_port,"
                                 " t.type, t.in_node_id, t.out_node_id FROM forward f LEFT JOIN tunnel t ON t.id = f.tunnel_id;")
     uts = run_sql(a.mysql, "SELECT id, user_id, tunnel_id, speed_id FROM user_tunnel;")
-    protocol_ids = {to_int(r['gost_forward_id']) for r in
-                    run_sql(a.mysql, "SELECT gost_forward_id FROM inbound_user WHERE gost_forward_id IS NOT NULL;")}
+    iu_rows = run_sql(a.mysql, "SELECT gost_forward_id FROM inbound_user WHERE gost_forward_id IS NOT NULL;",
+                      missing_table='inbound_user')
+    if iu_rows is None:
+        # 老部署从没建过协议:没有协议转发,「协议转发只认转发自己的限速」这一项判别跳过,其余照查
+        print('提示:库里没有 inbound_user 表(老部署没用过协议功能),跳过协议转发的识别,全部按普通转发检查')
+        iu_rows = []
+    protocol_ids = {to_int(r['gost_forward_id']) for r in iu_rows}
 
     ut_by = {(to_int(r['user_id']), to_int(r['tunnel_id'])): r for r in uts}
     fwd_by_id = {to_int(f['id']): f for f in forwards}

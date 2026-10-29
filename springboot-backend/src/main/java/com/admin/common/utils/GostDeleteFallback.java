@@ -92,23 +92,22 @@ public final class GostDeleteFallback {
     }
 
     /**
-     * 隧道权限(user_tunnel)这一级的批量暂停(到期 / 超额 / 停用):只按原名 {fid}_{uid}_{utId} 发,不走 _0 兜底。
-     * 节点回「原名 not found」→ 返回 false,调用方跳过这条转发:节点上不动,库里 status 也不改。
-     * 名字是 _0 的转发(分给车友的、管理员建的、协议的)不归这条隧道权限管 —— 老版本对它们本来就停不掉,
-     * 这样节点上的效果和老版本一致,也不再写出「库里停了、节点还在跑」的状态。
-     * 其它结果(成功、离线、超时)和老版本一样:远端按同一个原名停,返回 true(调用方照旧写库)。
+     * 所有【自动】批量暂停(账号/隧道权限/线路/单条转发的到期、超额、停用)都走这里:
+     * 只按老版本在这个调用点拼出来的原名发(包括老版本没有 user_tunnel 时拼出的 "x_y_null"),不走 _0 兜底。
+     * 发给节点的命令和老版本一字不差:入口按原名停;隧道转发再按同一个原名停远端(不管入口回什么,老版本也是照发)。
+     * 节点回「原名 not found」→ 返回 false:节点上什么都没变(gost 的 Pause 先校验名字再动手),
+     * 调用方跳过写库 —— 不再写出「库里停了、节点还在跑」的状态;并记进 AutoPauseSkips,
+     * 让其它按 status 挑转发的自动任务照老版本的样子跳过它(见 AutoPauseSkips)。
+     * 其它结果(成功、离线、超时)和老版本一样返回 true,调用方照旧写库。
      *
      * @param pauseRemote 隧道转发才传(停出口机上的远端服务),否则传 null
      */
     public static boolean pauseByOriginalName(String name, Function<String, GostDto> pauseIn, Function<String, GostDto> pauseRemote) {
         GostDto r = pauseIn.apply(name);
-        if (isNotFound(r, name)) {
-            return false;
-        }
         if (pauseRemote != null) {
             pauseRemote.apply(name);
         }
-        return true;
+        return !isNotFound(r, name);
     }
 
     /**

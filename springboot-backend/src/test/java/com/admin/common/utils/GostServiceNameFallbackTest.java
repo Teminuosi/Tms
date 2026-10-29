@@ -174,7 +174,8 @@ class GostServiceNameFallbackTest {
 
     @Test
     void userTunnelLevelPauseNeverFallsBackToZero() {
-        // 节点上只有 _0(分给车友 / 管理员建的转发):原名 not found → 跳过,_0 不动,远端一条不发
+        // 节点上只有 _0(分给车友 / 管理员建的转发):原名 not found → 跳过,_0 不动;
+        // 远端和老版本一样按同一个原名照发一条(出口机上也没有这个名字,什么都不动)
         FakeNode in = new FakeNode();
         FakeNode out = new FakeNode();
         in.services.addAll(Arrays.asList("5_2_0_tcp", "5_2_0_udp"));
@@ -182,7 +183,15 @@ class GostServiceNameFallbackTest {
         assertFalse(GostDeleteFallback.pauseByOriginalName("5_2_7", in.pause(), out.pause()));
         assertEquals(1, in.received.size());
         assertTrue(in.paused.isEmpty());
-        assertTrue(out.received.isEmpty());
+        assertEquals(Collections.singletonList(Arrays.asList("5_2_7_tcp", "5_2_7_udp")), out.received);
+        assertTrue(out.paused.isEmpty());
+
+        // 老版本没有 user_tunnel 时拼出的 "x_y_null" 照发,not found → 跳过
+        FakeNode n2 = new FakeNode();
+        n2.services.addAll(Arrays.asList("5_2_0_tcp", "5_2_0_udp"));
+        assertFalse(GostDeleteFallback.pauseByOriginalName("5_2_null", n2.pause(), null));
+        assertEquals(Collections.singletonList(Arrays.asList("5_2_null_tcp", "5_2_null_udp")), n2.received);
+        assertTrue(n2.paused.isEmpty());
 
         // 原名在:停入口、远端按同一个原名停
         in.services.addAll(Arrays.asList("6_2_7_tcp", "6_2_7_udp"));

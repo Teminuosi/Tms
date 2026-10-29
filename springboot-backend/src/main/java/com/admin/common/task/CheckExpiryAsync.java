@@ -1,5 +1,7 @@
 package com.admin.common.task;
 
+import com.admin.common.utils.AutoPauseSkips;
+import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
 import com.admin.entity.Forward;
 import com.admin.entity.Inbound;
@@ -98,9 +100,9 @@ public class CheckExpiryAsync {
                 continue;
             }
             // 只挑还在跑的:已经停掉的不再重复下发
-            List<Forward> live = forwardService.list(new QueryWrapper<Forward>()
+            List<Forward> live = AutoPauseSkips.withoutTreatedAsPaused(forwardService.list(new QueryWrapper<Forward>()
                     .eq("user_id", u.getId())
-                    .ne("status", 0));
+                    .ne("status", 0)));
             if (live.isEmpty()) {
                 continue;
             }
@@ -147,7 +149,7 @@ public class CheckExpiryAsync {
 
             List<Forward> live = new ArrayList<>();
             for (Forward f : forwards) {
-                if (f.getStatus() == null || f.getStatus() != 0) {
+                if ((f.getStatus() == null || f.getStatus() != 0) && !AutoPauseSkips.treatedAsPaused(f)) {
                     live.add(f);
                 }
             }
@@ -205,18 +207,23 @@ public class CheckExpiryAsync {
      */
     private void pauseForwards(List<Forward> forwards) {
         for (Forward f : forwards) {
+            boolean found = true;
             try {
                 Tunnel tunnel = tunnelService.getById(f.getTunnelId());
                 if (tunnel != null) {
+                    // 自动批量停:和老版本一样按 _0 发(入口 + 隧道转发的远端);节点回 not found 就跳过,库里不改
                     String svc = f.getId() + "_" + f.getUserId() + "_0";
-                    GostUtil.PauseService(tunnel.getInNodeId(), svc);
-                    if (tunnel.getType() != null && tunnel.getType() == 2) {
-                        GostUtil.PauseRemoteService(tunnel.getOutNodeId(), svc);
-                    }
+                    found = GostDeleteFallback.pauseByOriginalName(svc,
+                            n -> GostUtil.PauseService(tunnel.getInNodeId(), n),
+                            tunnel.getType() != null && tunnel.getType() == 2 ? n -> GostUtil.PauseRemoteService(tunnel.getOutNodeId(), n) : null);
                 }
             } catch (Exception e) {
                 // 单条失败不能中断整批:节点可能临时离线,下一轮巡检会再试
                 log.warn("暂停转发[{}]失败: {}", f.getId(), e.getMessage());
+            }
+            if (!found) {
+                AutoPauseSkips.remember(f);
+                continue;
             }
             f.setStatus(0);
             forwardService.updateById(f);

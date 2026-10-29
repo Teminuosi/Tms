@@ -326,7 +326,12 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     /**
      * 删协议/线路下的一条转发。返回 null = 删掉了(或库里早就没有这条转发,和以前一样直接清分配记录);
-     * 否则是失败原因 —— 调用方据此保留 inbound_user,不留下没人指向的孤儿转发。
+     * 否则是失败原因 —— 调用方据此保留 inbound_user。
+     *
+     * 节点离线 / 超时 / 连不上(没拿到 gost 的明确答复)时和老版本一样照删:库里的转发记录也一起删掉,
+     * 节点重新连上、上报配置时 CheckGostConfigAsync 会把库里已经没有的服务/链/远端清掉。
+     * (老版本这里转发记录会留在库里,节点上的服务因此永远不会被清。)
+     * 只有节点在线、gost 回了 not found 以外的明确错误才拒绝;not found 由 deleteForward 当成功处理。
      */
     private String deleteForwardOrReason(Long forwardId) {
         if (forwardMapper.selectById(forwardId) == null) {
@@ -337,9 +342,37 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             if (r != null && r.getCode() == 0) {
                 return null;
             }
-            return r == null ? "无响应" : r.getMsg();
+            String msg = r == null ? null : r.getMsg();
+            if (isNodeUnreachable(msg)) {
+                forwardMapper.deleteById(forwardId);
+                log.warn("删除转发[" + forwardId + "]时节点没答复(" + msg + "),照删库里记录,节点上的服务等它重连上报配置时清理");
+                return null;
+            }
+            return msg == null ? "无响应" : msg;
         } catch (Exception e) {
             return e.getMessage();
+        }
+    }
+
+    /**
+     * 没拿到 gost 的答复:节点不在线 / 连接断了 / 等待超时 / 发送失败(WebSocketServer.send_msg 的原文),
+     * 或者转发指向的隧道、节点记录已经没了(根本没法下发)。这些都不是 gost 回的错误。
+     */
+    static boolean isNodeUnreachable(String msg) {
+        if (msg == null) {
+            return true;
+        }
+        switch (msg) {
+            case "节点不在线":
+            case "节点连接已断开":
+            case "等待响应超时":
+            case "节点无响应":
+            case "隧道不存在":
+            case "入口节点不存在":
+            case "出口节点不存在":
+                return true;
+            default:
+                return msg.startsWith("发送消息失败");
         }
     }
 
@@ -371,7 +404,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             if (u.getGostForwardId() != null) {
                 String reason = deleteForwardOrReason(u.getGostForwardId());
                 if (reason != null) {
-                    // 转发没删掉(节点离线/超时等)就保留分配记录,否则转发成了谁也删不到的孤儿
+                    // 节点在线、gost 明确报错没删掉 → 保留分配记录(节点离线/超时照删,见 deleteForwardOrReason)
                     failed.add("转发[" + u.getGostForwardId() + "]" + reason);
                     continue;
                 }
@@ -1467,7 +1500,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         for (InboundUser iu : ius) {
             if (iu.getGostForwardId() != null) {
                 // 转发早就被手工删了 → deleteForwardOrReason 视为已删,照常清分配记录。
-                // 真没删掉(节点离线/超时)→ 这条分配保留,别的继续清,最后如实报失败。
+                // 节点离线/超时照删(见 deleteForwardOrReason);节点在线、gost 明确报错 → 这条分配保留,别的继续清,最后如实报失败。
                 String reason = deleteForwardOrReason(iu.getGostForwardId());
                 if (reason != null) {
                     log.warn("删除转发[" + iu.getGostForwardId() + "]失败,保留分配记录: " + reason);

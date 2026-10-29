@@ -6,9 +6,9 @@ import com.admin.common.dto.GostConfigDto;
 import com.admin.common.lang.R;
 import com.admin.common.task.CheckGostConfigAsync;
 import com.admin.common.utils.AESCrypto;
+import com.admin.common.utils.AutoPauseSkips;
 import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
-import com.admin.common.utils.ProtocolForwards;
 import com.admin.entity.*;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
@@ -338,8 +338,14 @@ public class FlowController extends BaseController {
         for (Forward f : lineForwards(userId, nodeId, landingId)) {
             Tunnel tunnel = tunnelService.getById(f.getTunnelId());
             if (tunnel != null) {
-                GostUtil.PauseService(tunnel.getInNodeId(),
-                        buildServiceName(String.valueOf(f.getId()), String.valueOf(f.getUserId()), DEFAULT_USER_TUNNEL_ID));
+                // 自动批量停:和老版本一样按 _0 发、只停入口;节点回 not found 就跳过,库里不改(见 pauseByOriginalName)
+                boolean found = GostDeleteFallback.pauseByOriginalName(
+                        buildServiceName(String.valueOf(f.getId()), String.valueOf(f.getUserId()), DEFAULT_USER_TUNNEL_ID),
+                        n -> GostUtil.PauseService(tunnel.getInNodeId(), n), null);
+                if (!found) {
+                    AutoPauseSkips.remember(f);
+                    continue;
+                }
             }
             f.setStatus(0);
             forwardService.updateById(f);
@@ -431,24 +437,8 @@ public class FlowController extends BaseController {
     }
 
     private void pauseSpecificForward(Integer tunnelId, String name, String userId) {
-        // 隧道权限超额/到期/停用只停这条隧道上的普通转发;协议/线路转发只看线路自己,见 ProtocolForwards
-        List<Forward> forwardList = ProtocolForwards.listExcluding(forwardService::list, () -> new QueryWrapper<Forward>().eq("tunnel_id", tunnelId).eq("user_id", userId));
-        // 隧道权限这一级只按原名停,不走 _0 兜底;节点回原名 not found 就跳过,库里 status 也不改。
-        // 名字是 _0 的转发(分给车友的、管理员建的)不归这条隧道权限管,老版本对它们本来就停不掉。
-        for (Forward forward : forwardList) {
-            Tunnel tunnel = tunnelService.getById(forward.getTunnelId());
-            if (tunnel != null) {
-                String svc = serviceNamesOf(forward).get(0);
-                boolean found = GostDeleteFallback.pauseByOriginalName(svc,
-                        n -> GostUtil.PauseService(tunnel.getInNodeId(), n),
-                        tunnel.getType() == 2 ? n -> GostUtil.PauseRemoteService(tunnel.getOutNodeId(), n) : null);
-                if (!found) {
-                    continue;
-                }
-            }
-            forward.setStatus(0);
-            forwardService.updateById(forward);
-        }
+        List<Forward> forwardList = forwardService.list(new QueryWrapper<Forward>().eq("tunnel_id", tunnelId).eq("user_id", userId));
+        pauseService(forwardList, name);
     }
 
     /**
@@ -465,14 +455,15 @@ public class FlowController extends BaseController {
         for (Forward forward : forwardList) {
             Tunnel tunnel = tunnelService.getById(forward.getTunnelId());
             if (tunnel != null){
-                // 先按原名停,节点回「原名 not found」才按 _0 再停 ——
-                // 协议/线路转发建的时候恒为 _0,车友在那条隧道上另有 user_tunnel 时原名对不上
-                List<String> names = serviceNamesOf(forward);
-                String[] used = new String[1];
-                GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(tunnel.getInNodeId(), n), used);
-                if (tunnel.getType() == 2){
-                    // 远端用入口实际命中的名字停,不再自己另找一遍(否则可能停到同端口的孤儿远端上)
-                    GostUtil.PauseRemoteService(tunnel.getOutNodeId(), used[0]);
+                // 自动批量停(账号/隧道权限超额、到期、停用):只按老版本的原名发,入口 + 隧道转发的远端,不走 _0 兜底。
+                // 节点回原名 not found → 节点上没动,库里也不改(老版本这里会写成 0,节点却还在跑)
+                String svc = serviceNameOf(forward);
+                boolean found = GostDeleteFallback.pauseByOriginalName(svc,
+                        n -> GostUtil.PauseService(tunnel.getInNodeId(), n),
+                        tunnel.getType() == 2 ? n -> GostUtil.PauseRemoteService(tunnel.getOutNodeId(), n) : null);
+                if (!found) {
+                    AutoPauseSkips.remember(forward);
+                    continue;
                 }
             }
             forward.setStatus(0);
@@ -484,9 +475,8 @@ public class FlowController extends BaseController {
      * 这条转发在 gost 上的服务名。
      * 协议/中转的转发没有 user_tunnel,userTunnelId 恒为 0;老隧道业务要按
      * (userId, tunnelId) 反查 UserTunnel 拿 id —— Forward 表本身不存这个字段。
-     * 返回候选名:第一个是原来的拼法,有 user_tunnel 时再加 _0(见 GostDeleteFallback.firstFound)。
      */
-    private List<String> serviceNamesOf(Forward forward) {
+    private String serviceNameOf(Forward forward) {
         int userTunnelId = 0;
         try {
             UserTunnel ut = userTunnelService.getOne(new QueryWrapper<UserTunnel>()
@@ -501,7 +491,7 @@ public class FlowController extends BaseController {
             // 这里失败也不能让整批暂停中断。
             log.warn("查 user_tunnel 失败,转发[{}]按 userTunnelId=0 处理: {}", forward.getId(), e.getMessage());
         }
-        return GostDeleteFallback.candidateNames(forward.getId(), forward.getUserId(), userTunnelId);
+        return forward.getId() + "_" + forward.getUserId() + "_" + userTunnelId;
     }
 
     private FlowDto filterFlowData(FlowDto flowDto, Forward forward, int flowType) {
