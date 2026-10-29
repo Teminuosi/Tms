@@ -1251,6 +1251,14 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
      * 更新Gost服务
      */
     private R updateGostServices(Forward forward, Tunnel tunnel, Integer limiter, NodeInfo nodeInfo, UserTunnel userTunnel) {
+        return updateGostServices(forward, tunnel, limiter, nodeInfo, userTunnel, limiter);
+    }
+
+    /**
+     * @param zeroNameLimiter 原名没有、落到 _0 时主服务用的限速器(_0 是 createForwardForUser 建的,限速和它创建时一致);
+     *                        命中原名时照旧用 limiter
+     */
+    private R updateGostServices(Forward forward, Tunnel tunnel, Integer limiter, NodeInfo nodeInfo, UserTunnel userTunnel, Integer zeroNameLimiter) {
         // 第一个是原名;原名 not found 时先按 _0 更新,都没有才和以前一样按原名新建
         List<String> names = serviceNameCandidates(forward, userTunnel);
         String[] chainUsed = new String[1];
@@ -1277,7 +1285,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             interfaceName = forward.getInterfaceName();
         }
         // 更新主服务
-        R serviceResult = updateMainService(nodeInfo.getInNode(), names, forward, limiter, tunnel.getType(), tunnel, forward.getStrategy(), interfaceName, mainUsed);
+        R serviceResult = updateMainService(nodeInfo.getInNode(), names, forward, limiter, tunnel.getType(), tunnel, forward.getStrategy(), interfaceName, mainUsed, zeroNameLimiter);
         if (serviceResult.getCode() != 0) {
             updateForwardStatusToError(forward);
             return serviceResult;
@@ -1490,9 +1498,11 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     /**
      * 更新主服务
      */
-    private R updateMainService(Node inNode, List<String> names, Forward forward, Integer limiter, Integer tunnelType, Tunnel tunnel, String strategy, String interfaceName, String[] used) {
+    private R updateMainService(Node inNode, List<String> names, Forward forward, Integer limiter, Integer tunnelType, Tunnel tunnel, String strategy, String interfaceName, String[] used, Integer zeroNameLimiter) {
         String serviceName = names.get(0);
-        GostDto result = GostDeleteFallback.firstFound(names, n -> GostUtil.UpdateService(inNode.getId(), n, forward.getInPort(), limiter, forward.getRemoteAddr(), tunnelType, tunnel, strategy, interfaceName), used);
+        // 原名照旧用 limiter;落到 _0(兜底名)时用 zeroNameLimiter
+        GostDto result = GostDeleteFallback.firstFound(names, n -> GostUtil.UpdateService(inNode.getId(), n, forward.getInPort(),
+                n.equals(serviceName) ? limiter : zeroNameLimiter, forward.getRemoteAddr(), tunnelType, tunnel, strategy, interfaceName), used);
 
         if (result.getMsg().contains(GOST_NOT_FOUND_MSG)) {
             result = GostUtil.AddService(inNode.getId(), serviceName, forward.getInPort(), limiter, forward.getRemoteAddr(), tunnelType, tunnel, strategy, interfaceName);
@@ -1716,11 +1726,16 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         if (nodeInfo.isHasError()) {
             return;
         }
-        // 只有协议/线路续费在调(InboundServiceImpl),这些转发都是 createForwardForUser 建的:
-        // 名字恒为 _0、限速只认 forward.speedId(建的时候 resolveLimiter(forward, null))。
-        // 以前有 user_tunnel 时回退到隧道权限的限速 —— 那时名字对不上、这次更新本来就不生效;
-        // 现在能按 _0 更新上了,限速要和创建时一致,不能顺手挂上隧道权限的限速。
-        updateGostServices(forward, tunnel, resolveLimiter(forward, null), nodeInfo, userTunnel);
+        Integer limiter;
+        if (userTunnel == null) {
+            limiter = null;
+        } else {
+            limiter = userTunnel.getSpeedId();
+        }
+        // 只有协议/线路续费在调(InboundServiceImpl),这些转发都是 createForwardForUser 建的(名字 _0,
+        // 限速只认 forward.speedId)。命中原名时限速照旧(老版本可能在 _0 暂停时按原名 Add 出过一条,
+        // 那条一直按这个限速在跑,不能动);落到 _0 时限速和创建时一致,不顺手挂上隧道权限的限速。
+        updateGostServices(forward, tunnel, resolveLimiter(forward, limiter), nodeInfo, userTunnel, resolveLimiter(forward, null));
     }
 
 
