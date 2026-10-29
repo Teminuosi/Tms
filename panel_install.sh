@@ -202,6 +202,7 @@ show_menu() {
   echo "  7. 导出数据库备份"
   echo "  8. 配置域名 + HTTPS"
   echo "  9. 从备份恢复数据库(搬机器用)"
+  echo " 10. 清理日志(腾磁盘空间)"
   echo "  0. 退出"
   echo "==============================================="
 }
@@ -1766,11 +1767,112 @@ restore_migration_sql() {
   return 0
 }
 
+# 清理日志(tms clean-logs / 菜单 10)
+# 只动两类东西,别的一概不碰(MySQL 数据、docker 卷本身、其它程序的容器都不动):
+#   1) 后端应用日志:backend_logs 卷里 7 天前的 yyyy-MM-dd*.log —— 删除
+#   2) 面板 3 个容器(gost-mysql / springboot-backend / vite-frontend)的 docker json 日志 —— 截断成 0(不删文件,docker 还拿着句柄)
+# 加 -y / --yes 跳过确认。
+_human_size() {
+  awk -v b="${1:-0}" 'BEGIN{
+    if (b>=1073741824) printf "%.2f GB", b/1073741824;
+    else if (b>=1048576) printf "%.1f MB", b/1048576;
+    else if (b>=1024) printf "%.1f KB", b/1024;
+    else printf "%d B", b }'
+}
+
+_file_size() { stat -c %s "$1" 2>/dev/null || echo 0; }
+
+clean_logs() {
+  local assume_yes=0
+  case "${1:-}" in -y|--yes) assume_yes=1 ;; esac
+
+  if [ "$(id -u)" != "0" ]; then
+    echo "❌ 需要 root 权限(日志在 /var/lib/docker 下),请用 root 或 sudo 运行"
+    return 1
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "❌ 没找到 docker 命令"
+    return 1
+  fi
+
+  # 1) 应用日志目录:以 docker 报的卷位置为准,查不到再用默认位置
+  local app_dir=""
+  app_dir="$(docker volume inspect -f '{{.Mountpoint}}' backend_logs 2>/dev/null || true)"
+  [ -z "$app_dir" ] && app_dir="/var/lib/docker/volumes/backend_logs/_data"
+
+  local old_files=() f
+  if [ -d "$app_dir" ]; then
+    # 只认 logback 生成的 yyyy-MM-dd*.log,且最后修改时间在 7 天前;不进子目录
+    while IFS= read -r -d '' f; do
+      old_files+=("$f")
+    done < <(find "$app_dir" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*.log' -mtime +6 -print0 2>/dev/null)
+  fi
+
+  # 2) 容器 json 日志:只看面板自己的 3 个容器;含 docker 轮转出来的 .1 .2 ...
+  local ctr_files=() c lp
+  for c in gost-mysql springboot-backend vite-frontend; do
+    lp="$(docker inspect -f '{{.LogPath}}' "$c" 2>/dev/null || true)"
+    [ -z "$lp" ] && continue
+    for f in "$lp" "$lp".*; do
+      [ -s "$f" ] && ctr_files+=("$f")   # 已经是空的就不算
+    done
+  done
+
+  local app_bytes=0 ctr_bytes=0 s
+  for f in "${old_files[@]}"; do s=$(_file_size "$f"); app_bytes=$((app_bytes + s)); done
+  for f in "${ctr_files[@]}"; do s=$(_file_size "$f"); ctr_bytes=$((ctr_bytes + s)); done
+  local total=$((app_bytes + ctr_bytes))
+
+  echo "==============================================="
+  echo "  清理日志(不动数据库、不动 docker 卷)"
+  echo "==============================================="
+  echo "  应用日志目录: $app_dir"
+  echo "  7 天前的应用日志: ${#old_files[@]} 个,$(_human_size "$app_bytes") —— 删除"
+  echo "  面板容器日志:     ${#ctr_files[@]} 个,$(_human_size "$ctr_bytes") —— 清空(截断为 0)"
+  echo "  预计腾出: $(_human_size "$total")"
+  echo "==============================================="
+
+  if [ "${#old_files[@]}" -eq 0 ] && [ "${#ctr_files[@]}" -eq 0 ]; then
+    echo "✅ 没有需要清理的日志"
+    return 0
+  fi
+
+  if [ "$assume_yes" != "1" ]; then
+    local ans=""
+    read -rp "确认清理?[y/N] " ans || true
+    case "$ans" in
+      y|Y|yes|YES) ;;
+      *) echo "已取消,什么都没动"; return 0 ;;
+    esac
+  fi
+
+  local before after
+  before=$(df -Pk "$app_dir" 2>/dev/null | awk 'NR==2{print $4}' || true)
+
+  local del_ok=0 del_fail=0 tr_ok=0 tr_fail=0
+  for f in "${old_files[@]}"; do
+    if rm -f -- "$f"; then del_ok=$((del_ok + 1)); else del_fail=$((del_fail + 1)); fi
+  done
+  for f in "${ctr_files[@]}"; do
+    if truncate -s 0 -- "$f"; then tr_ok=$((tr_ok + 1)); else tr_fail=$((tr_fail + 1)); fi
+  done
+
+  after=$(df -Pk "$app_dir" 2>/dev/null | awk 'NR==2{print $4}' || true)
+
+  echo "✅ 清理完成:删除应用日志 ${del_ok} 个,清空容器日志 ${tr_ok} 个"
+  [ $((del_fail + tr_fail)) -gt 0 ] && echo "⚠️  失败:删除 ${del_fail} 个,清空 ${tr_fail} 个"
+  if [ -n "$before" ] && [ -n "$after" ]; then
+    echo "   磁盘可用空间:$(_human_size $((before * 1024))) → $(_human_size $((after * 1024)))"
+  fi
+  return 0
+}
+
 # 主逻辑：默认一令到底直接安装；传参数才做别的
 #   ./panel_install.sh            直接安装（默认，无需选择）
 #   ./panel_install.sh update     更新
 #   ./panel_install.sh uninstall  卸载
 #   ./panel_install.sh menu       交互式菜单
+#   ./panel_install.sh clean-logs [-y]  清理日志(tms clean-logs)
 main() {
   case "${1:-install}" in
     install)   install_panel; delete_self ;;
@@ -1784,12 +1886,13 @@ main() {
     status)    show_status ;;
     info)      show_access_info ;;
     domain)    setup_domain "$2" ;;
+    clean-logs) clean_logs "$2" ;;
     menu)      menu_loop ;;
     *)
       # 打错命令不能默认去装面板 —— `tms uninstal`(少个 l)、`tms purge2` 这类
       # 手滑会变成一次重装,把正在跑的面板覆盖掉。无参数仍走安装(见上面的 :-install)。
       echo "❌ 未知命令: $1"
-      echo "可用命令: install / update / uninstall / purge / export / restore / status / info / domain / menu"
+      echo "可用命令: install / update / uninstall / purge / export / restore / status / info / domain / clean-logs / menu"
       exit 1
       ;;
   esac
@@ -1817,6 +1920,7 @@ menu_loop() {
         read -p "输入域名(直接回车取消,输 off 关闭域名): " d
         [ -n "$d" ] && setup_domain "$d"
         ;;
+      10) clean_logs ;;
       0) echo "👋 退出"; break ;;
       *) echo "❌ 无效选项，请重新输入" ;;
     esac
