@@ -66,6 +66,11 @@ public final class GostDeleteFallback {
      * 离线、超时等其它错误不换名,原样返回。
      */
     public static GostDto firstFound(List<String> candidates, Function<String, GostDto> op) {
+        return firstFound(candidates, op, null);
+    }
+
+    /** 同上;used 不为 null 时 used[0] 记下返回的是哪个名字的结果(都 not found 时是原名)。 */
+    public static GostDto firstFound(List<String> candidates, Function<String, GostDto> op, String[] used) {
         GostDto first = null;
         for (int i = 0; i < candidates.size(); i++) {
             String name = candidates.get(i);
@@ -74,8 +79,14 @@ public final class GostDeleteFallback {
                 first = r;
             }
             if (!isNotFound(r, name)) {
+                if (used != null) {
+                    used[0] = name;
+                }
                 return r;
             }
+        }
+        if (used != null) {
+            used[0] = candidates.get(0);
         }
         return first;
     }

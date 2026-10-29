@@ -151,6 +151,28 @@ class GostServiceNameFallbackTest {
     }
 
     @Test
+    void usedNameReportsWhichCandidateAnswered() {
+        FakeNode node = new FakeNode();
+        node.services.addAll(Arrays.asList("5_2_0_tcp", "5_2_0_udp"));
+        String[] used = new String[1];
+        GostDeleteFallback.firstFound(GostDeleteFallback.candidateNames(5L, 2, 7), node.pause(), used);
+        assertEquals("5_2_0", used[0]);
+
+        node.services.addAll(Arrays.asList("5_2_7_tcp", "5_2_7_udp"));
+        GostDeleteFallback.firstFound(GostDeleteFallback.candidateNames(5L, 2, 7), node.pause(), used);
+        assertEquals("5_2_7", used[0]);
+
+        // 都没有 → 记原名(调用方随后按原名 Add)
+        GostDeleteFallback.firstFound(GostDeleteFallback.candidateNames(6L, 2, 7), node.pause(), used);
+        assertEquals("6_2_7", used[0]);
+
+        // 离线 → 原名
+        node.offline = true;
+        GostDeleteFallback.firstFound(GostDeleteFallback.candidateNames(5L, 2, 7), node.pause(), used);
+        assertEquals("5_2_7", used[0]);
+    }
+
+    @Test
     void nullUserTunnelIdIsZeroNotNull() {
         // ResetFlowAsync 以前拿 null 拼出 "5_2_null"
         assertEquals(Collections.singletonList("5_2_0"), GostDeleteFallback.candidateNames(5L, 2, null));
