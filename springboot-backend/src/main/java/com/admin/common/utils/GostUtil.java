@@ -61,6 +61,15 @@ public class GostUtil {
         return WebSocketServer.send_msg(node_id, data, "DeleteService");
     }
 
+    /** 按完整名字删一个服务(删除兜底逐个确认 _tcp / _udp 时用) */
+    public static GostDto DeleteOneService(Long node_id, String fullName) {
+        JSONObject data = new JSONObject();
+        JSONArray services = new JSONArray();
+        services.add(fullName);
+        data.put("services", services);
+        return WebSocketServer.send_msg(node_id, data, "DeleteService");
+    }
+
     public static GostDto AddRemoteService(Long node_id, String name, Integer out_port, String remoteAddr,  String protocol, String strategy, String interfaceName) {
         JSONObject data = new JSONObject();
         data.put("name", name + "_tls");
