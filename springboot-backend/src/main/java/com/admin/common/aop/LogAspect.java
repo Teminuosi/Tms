@@ -44,6 +44,13 @@ public class LogAspect {
      */
     @AfterReturning(value = "pt()", returning = "returnValue")
     public void log(JoinPoint joinPoint, Object returnValue) throws Throwable {
+        // 节点高频上报接口(@LogAnnotation(quiet = true)):只在 DEBUG 打,INFO 下直接跳过,连参数序列化也省掉
+        LogAnnotation ann = ((MethodSignature) joinPoint.getSignature()).getMethod().getAnnotation(LogAnnotation.class);
+        boolean quiet = ann != null && ann.quiet();
+        if (quiet && !log.isDebugEnabled()) {
+            return;
+        }
+
         // 获取请求信息
         HttpServletRequest request = HttpContextUtils.getHttpServletRequest();
         
@@ -82,7 +89,11 @@ public class LogAspect {
         );
         
         // 打印单条完整日志
-        log.info(logMessage);
+        if (quiet) {
+            log.debug(logMessage);
+        } else {
+            log.info(logMessage);
+        }
     }
 
 

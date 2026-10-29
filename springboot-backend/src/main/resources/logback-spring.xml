@@ -20,7 +20,14 @@
         <Prudent>true</Prudent>
         <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
             <FileNamePattern>${FILE_PATH}</FileNamePattern>
-            <maxHistory>30</maxHistory>
+            <!-- 保留 7 天 + 总量 1GB 封顶(以前 30 天且不封顶,面板机一个月涨了十几 GB)。
+                 文件名仍是 yyyy-MM-dd.log;不用 SizeAndTime(要加 %i 改文件名,老文件就没人清了)。
+                 cleanHistoryOnStart:重启时清超期日志。注意 logback 1.2 一次最多往回看 32 天(maxHistory 之外):
+                 40 天以前的孤儿日志它清不到 —— 用 `tms clean-logs`(按修改时间,不受这个限制)。
+                 totalSizeCap 会把当天正在写的文件也算进去:某一天单日超过 1GB 时,重启会连当天一起清(日志照常继续写)。 -->
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+            <cleanHistoryOnStart>true</cleanHistoryOnStart>
         </rollingPolicy>
         <layout class="ch.qos.logback.classic.PatternLayout">
             <Pattern>

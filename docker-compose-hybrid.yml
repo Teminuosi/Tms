@@ -11,6 +11,11 @@ services:
   mysql:
     image: mysql:5.7
     container_name: gost-mysql
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
@@ -43,6 +48,11 @@ services:
       dockerfile: Dockerfile
     image: tms-backend:hybrid
     container_name: springboot-backend
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     restart: unless-stopped
     environment:
       DB_HOST: mysql
@@ -68,6 +78,11 @@ services:
       dockerfile: Dockerfile
     image: tms-frontend:hybrid
     container_name: vite-frontend
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT}:80"

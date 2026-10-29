@@ -144,7 +144,7 @@ public class FlowController extends BaseController {
      * @return 处理结果
      */
     @RequestMapping("/upload")
-    @LogAnnotation
+    @LogAnnotation(quiet = true)
     public String uploadFlowData(@RequestBody String rawData, String secret) {
         // 1. 验证节点权限
         if (!isValidNode(secret)) {
@@ -160,8 +160,8 @@ public class FlowController extends BaseController {
             return SUCCESS_RESPONSE;
         }
 
-        // 记录日志
-        log.info("节点上报流量数据{}", flowDataList);
+        // 记录日志(节点每几秒报一次,INFO 会把日志撑爆,改 DEBUG)
+        log.debug("节点上报流量数据{}", flowDataList);
         // 4. 处理流量数据
         return processFlowData(flowDataList);
     }
