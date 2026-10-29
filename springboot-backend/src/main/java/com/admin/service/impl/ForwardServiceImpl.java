@@ -5,6 +5,7 @@ import com.admin.common.dto.ForwardUpdateDto;
 import com.admin.common.dto.ForwardWithTunnelDto;
 import com.admin.common.dto.GostDto;
 import com.admin.common.lang.R;
+import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
 import com.admin.common.utils.JwtUtil;
 import com.admin.common.utils.WebSocketServer;
@@ -1356,25 +1357,33 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
      * 删除Gost服务
      */
     private R deleteGostServices(Forward forward, Tunnel tunnel, NodeInfo nodeInfo, UserTunnel userTunnel) {
-        String serviceName = buildServiceName(forward.getId(), forward.getUserId(), userTunnel);
+        // 第一个候选就是原来的 buildServiceName,先按它删 —— 正常路径发给节点的命令和以前一字不差。
+        // 只有节点回「这个名字 not found」才按 _0 等候选名逐个确认,见 GostDeleteFallback。
+        List<String> names = GostDeleteFallback.candidateNames(forward.getId(), forward.getUserId(),
+                userTunnel != null ? userTunnel.getId() : null);
+        Long inNodeId = nodeInfo.getInNode().getId();
 
         // 删除主服务
-        GostDto serviceResult = GostUtil.DeleteService(nodeInfo.getInNode().getId(), serviceName);
-        if (!isGostOperationSuccess(serviceResult)) {
-            return R.err(serviceResult.getMsg());
+        String err = GostDeleteFallback.delete(names,
+                n -> GostUtil.DeleteService(inNodeId, n),
+                Arrays.asList(n -> GostUtil.DeleteOneService(inNodeId, n + "_tcp"),
+                        n -> GostUtil.DeleteOneService(inNodeId, n + "_udp")));
+        if (err != null) {
+            return R.err(err);
         }
 
         // 隧道转发需要删除链和远程服务
         if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD) {
-            GostDto chainResult = GostUtil.DeleteChains(nodeInfo.getInNode().getId(), serviceName);
-            if (!isGostOperationSuccess(chainResult)) {
-                return R.err(chainResult.getMsg());
+            err = GostDeleteFallback.delete(names, n -> GostUtil.DeleteChains(inNodeId, n), Collections.emptyList());
+            if (err != null) {
+                return R.err(err);
             }
 
             if (nodeInfo.getOutNode() != null) {
-                GostDto remoteResult = GostUtil.DeleteRemoteService(nodeInfo.getOutNode().getId(), serviceName);
-                if (!isGostOperationSuccess(remoteResult)) {
-                    return R.err(remoteResult.getMsg());
+                Long outNodeId = nodeInfo.getOutNode().getId();
+                err = GostDeleteFallback.delete(names, n -> GostUtil.DeleteRemoteService(outNodeId, n), Collections.emptyList());
+                if (err != null) {
+                    return R.err(err);
                 }
             }
         }

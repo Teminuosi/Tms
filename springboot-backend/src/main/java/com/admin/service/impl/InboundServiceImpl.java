@@ -311,10 +311,36 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             qw.isNull("landing_id");
         }
         List<Inbound> inbounds = this.list(qw);
+        List<String> failed = new java.util.ArrayList<>();
         for (Inbound in : inbounds) {
-            deleteInbound(in.getId());
+            R r = deleteInbound(in.getId());
+            if (r.getCode() != 0) {
+                failed.add("协议[" + in.getId() + "]" + r.getMsg());
+            }
+        }
+        if (!failed.isEmpty()) {
+            return R.err(String.join("\n", failed));
         }
         return R.ok();
+    }
+
+    /**
+     * 删协议/线路下的一条转发。返回 null = 删掉了(或库里早就没有这条转发,和以前一样直接清分配记录);
+     * 否则是失败原因 —— 调用方据此保留 inbound_user,不留下没人指向的孤儿转发。
+     */
+    private String deleteForwardOrReason(Long forwardId) {
+        if (forwardMapper.selectById(forwardId) == null) {
+            return null;
+        }
+        try {
+            R r = forwardService.deleteForward(forwardId);
+            if (r != null && r.getCode() == 0) {
+                return null;
+            }
+            return r == null ? "无响应" : r.getMsg();
+        } catch (Exception e) {
+            return e.getMessage();
+        }
     }
 
     /** SS-2022 密钥:32 字节随机 → 标准 base64(带 padding),sing-box 的 password 要这个格式 */
@@ -340,11 +366,23 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         }
         List<InboundUser> users = inboundUserMapper.selectList(
                 new QueryWrapper<InboundUser>().eq("inbound_id", id));
+        List<String> failed = new java.util.ArrayList<>();
         for (InboundUser u : users) {
             if (u.getGostForwardId() != null) {
-                forwardService.deleteForward(u.getGostForwardId());
+                String reason = deleteForwardOrReason(u.getGostForwardId());
+                if (reason != null) {
+                    // 转发没删掉(节点离线/超时等)就保留分配记录,否则转发成了谁也删不到的孤儿
+                    failed.add("转发[" + u.getGostForwardId() + "]" + reason);
+                    continue;
+                }
             }
             inboundUserMapper.deleteById(u.getId());
+        }
+        if (!failed.isEmpty()) {
+            if (failed.size() < users.size()) {
+                pushNodeSingbox(in.getNodeId()); // 已删掉的那几个用户要从 sing-box 里拿掉
+            }
+            return R.err("有 " + failed.size() + " 条转发没删掉,协议先保留,请稍后重试:" + String.join(";", failed));
         }
         this.removeById(id);
         pushNodeSingbox(in.getNodeId());
@@ -1217,7 +1255,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             return R.err("记录不存在");
         }
         if (iu.getGostForwardId() != null) {
-            forwardService.deleteForward(iu.getGostForwardId());
+            String reason = deleteForwardOrReason(iu.getGostForwardId());
+            if (reason != null) {
+                return R.err("转发[" + iu.getGostForwardId() + "]没删掉,分配先保留,请稍后重试:" + reason);
+            }
         }
         inboundUserMapper.deleteById(inboundUserId);
         Inbound in = this.getById(iu.getInboundId());
@@ -1416,17 +1457,25 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         if (ius.isEmpty()) {
             return R.err("线路不存在");
         }
+        List<String> failed = new java.util.ArrayList<>();
         for (InboundUser iu : ius) {
             if (iu.getGostForwardId() != null) {
-                try {
-                    forwardService.deleteForward(iu.getGostForwardId());
-                } catch (Exception e) {
-                    // 转发可能早就被手工删了。这里不能中断:剩下的分配记录不清掉的话,
-                    // 线路会半死不活地卡在订阅里。
-                    log.warn("删除转发[" + iu.getGostForwardId() + "]失败(继续清理): " + e.getMessage());
+                // 转发早就被手工删了 → deleteForwardOrReason 视为已删,照常清分配记录。
+                // 真没删掉(节点离线/超时)→ 这条分配保留,别的继续清,最后如实报失败。
+                String reason = deleteForwardOrReason(iu.getGostForwardId());
+                if (reason != null) {
+                    log.warn("删除转发[" + iu.getGostForwardId() + "]失败,保留分配记录: " + reason);
+                    failed.add("转发[" + iu.getGostForwardId() + "]" + reason);
+                    continue;
                 }
             }
             inboundUserMapper.deleteById(iu.getId());
+        }
+        if (!failed.isEmpty()) {
+            if (failed.size() < ius.size()) {
+                pushNodeSingbox(nodeId);
+            }
+            return R.err("有 " + failed.size() + " 条转发没删掉,线路先保留,请稍后重试:" + String.join(";", failed));
         }
         InboundLine line = getLine(userId, nodeId, landingId);
         if (line != null) {
