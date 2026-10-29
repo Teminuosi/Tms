@@ -2,6 +2,7 @@ package com.admin.common.task;
 
 import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
+import com.admin.common.utils.ProtocolForwards;
 import com.admin.entity.Forward;
 import com.admin.entity.InboundLine;
 import com.admin.entity.InboundUser;
@@ -308,7 +309,8 @@ public class ResetFlowAsync {
         List<UserTunnel> user_tunnel_list = userTunnelService.list(new QueryWrapper<UserTunnel>().eq("status", 1).isNotNull("exp_time").gt("exp_time", 0).lt("exp_time", new Date().getTime()));
         // 查询对应转发
         for (UserTunnel userTunnel : user_tunnel_list) {
-            List<Forward> forwardList = forwardService.list(new QueryWrapper<Forward>().eq("tunnel_id", userTunnel.getTunnelId()).eq("user_id", userTunnel.getUserId()).eq("status", 1));
+            // 协议/线路转发不归隧道权限管(只看线路自己的状态和到期),见 ProtocolForwards
+            List<Forward> forwardList = forwardService.list(ProtocolForwards.exclude(new QueryWrapper<Forward>().eq("tunnel_id", userTunnel.getTunnelId()).eq("user_id", userTunnel.getUserId()).eq("status", 1)));
             for (Forward forward : forwardList) {
                 pauseForwardService(forward, userTunnel.getId());
                 forward.setStatus(0);

@@ -8,6 +8,7 @@ import com.admin.common.task.CheckGostConfigAsync;
 import com.admin.common.utils.AESCrypto;
 import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
+import com.admin.common.utils.ProtocolForwards;
 import com.admin.entity.*;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
@@ -430,7 +431,8 @@ public class FlowController extends BaseController {
     }
 
     private void pauseSpecificForward(Integer tunnelId, String name, String userId) {
-        List<Forward> forwardList = forwardService.list(new QueryWrapper<Forward>().eq("tunnel_id", tunnelId).eq("user_id", userId));
+        // 隧道权限超额/到期/停用只停这条隧道上的普通转发;协议/线路转发只看线路自己,见 ProtocolForwards
+        List<Forward> forwardList = forwardService.list(ProtocolForwards.exclude(new QueryWrapper<Forward>().eq("tunnel_id", tunnelId).eq("user_id", userId)));
         pauseService(forwardList, name);
     }
 

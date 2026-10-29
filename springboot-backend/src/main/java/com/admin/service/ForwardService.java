@@ -83,6 +83,9 @@ public interface ForwardService extends IService<Forward> {
 
     void updateForwardA(Forward forward);
 
+    /** 按库里现有的限速/到期/暂停状态把转发重新下发到节点,不写库(隧道改监听地址等重推用) */
+    R repushForward(Forward forward);
+
     /**
      * 指定用户建端口转发,并把建好的 Forward 放进 R.data 返回(合体面板 InboundService 用)。
      * 跳过自助权限校验(管理员代建),转发归属传入用户,便于按用户汇总流量/限速/到期。
