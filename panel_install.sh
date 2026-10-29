@@ -1828,7 +1828,7 @@ clean_logs() {
   echo "==============================================="
   echo "  应用日志目录: $app_dir"
   echo "  7 天前的应用日志: ${#old_files[@]} 个,$(_human_size "$app_bytes") —— 删除"
-  echo "  面板容器日志:     ${#ctr_files[@]} 个,$(_human_size "$ctr_bytes") —— 清空(截断为 0)"
+  echo "  面板容器日志:     ${#ctr_files[@]} 个,$(_human_size "$ctr_bytes") —— 清空(截断为 0;正开着 docker logs -f 看实时日志的要重新打开)"
   echo "  预计腾出: $(_human_size "$total")"
   echo "==============================================="
 
@@ -1920,7 +1920,7 @@ menu_loop() {
         read -p "输入域名(直接回车取消,输 off 关闭域名): " d
         [ -n "$d" ] && setup_domain "$d"
         ;;
-      10) clean_logs ;;
+      10) clean_logs || true ;;
       0) echo "👋 退出"; break ;;
       *) echo "❌ 无效选项，请重新输入" ;;
     esac
