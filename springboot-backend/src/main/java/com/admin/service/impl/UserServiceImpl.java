@@ -6,6 +6,7 @@ import cn.hutool.core.map.MapUtil;
 import cn.hutool.core.util.StrUtil;
 import com.admin.common.dto.*;
 import com.admin.common.lang.R;
+import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
 import com.admin.common.utils.JwtUtil;
 import com.admin.common.utils.Md5Util;
@@ -25,6 +26,8 @@ import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
@@ -588,16 +591,23 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
         // 获取用户隧道关系
         UserTunnel userTunnel = getUserTunnelRelation(userId, tunnel.getId());
-        if (userTunnel == null) return;
 
-        String serviceName = buildServiceName(forward.getId(), userId, userTunnel.getId());
+        // 先按原名删,原名 not found 才按 _0 逐个确认(GostDeleteFallback)。
+        // 协议/线路/分给车友的转发建的时候恒为 _0:车友在那条隧道上另有 user_tunnel 时原名对不上;
+        // 没有 user_tunnel 时以前直接 return、一个都不删 —— 两种都会在节点上留下没人管的服务。
+        List<String> names = GostDeleteFallback.candidateNames(forward.getId(), userId.intValue(),
+                userTunnel != null ? userTunnel.getId() : null);
+        Long inNodeId = inNode.getId();
 
         // 删除主服务
-        GostUtil.DeleteService(inNode.getId(), serviceName);
+        GostDeleteFallback.delete(names,
+                n -> GostUtil.DeleteService(inNodeId, n),
+                Arrays.asList(n -> GostUtil.DeleteOneService(inNodeId, n + "_tcp"),
+                        n -> GostUtil.DeleteOneService(inNodeId, n + "_udp")));
 
         // 如果是隧道转发，还需要删除链和远程服务
         if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD) {
-            deleteGostTunnelForwardServices(tunnel, serviceName, inNode);
+            deleteGostTunnelForwardServices(tunnel, names, inNode);
         }
     }
 
@@ -605,14 +615,14 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
      * 删除隧道转发相关的Gost服务
      * 
      * @param tunnel 隧道对象
-     * @param serviceName 服务名称
+     * @param names 候选服务名(第一个是原名)
      * @param inNode 入口节点
      */
-    private void deleteGostTunnelForwardServices(Tunnel tunnel, String serviceName, Node inNode) {
+    private void deleteGostTunnelForwardServices(Tunnel tunnel, List<String> names, Node inNode) {
         Node outNode = nodeService.getNodeById(tunnel.getOutNodeId());
         if (outNode != null) {
-            GostUtil.DeleteChains(inNode.getId(), serviceName);
-            GostUtil.DeleteRemoteService(outNode.getId(), serviceName);
+            GostDeleteFallback.delete(names, n -> GostUtil.DeleteChains(inNode.getId(), n), Collections.emptyList());
+            GostDeleteFallback.delete(names, n -> GostUtil.DeleteRemoteService(outNode.getId(), n), Collections.emptyList());
         }
     }
 
@@ -628,19 +638,6 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
                 .eq("user_id", userId)
                 .eq("tunnel_id", tunnelId));
     }
-
-    /**
-     * 构建服务名称
-     * 
-     * @param forwardId 转发ID
-     * @param userId 用户ID
-     * @param userTunnelId 用户隧道ID
-     * @return 服务名称
-     */
-    private String buildServiceName(Long forwardId, Long userId, Integer userTunnelId) {
-        return forwardId + "_" + userId + "_" + userTunnelId;
-    }
-
 
     /**
      * 删除用户隧道权限

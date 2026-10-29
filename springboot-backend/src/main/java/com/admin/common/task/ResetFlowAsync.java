@@ -1,5 +1,6 @@
 package com.admin.common.task;
 
+import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
 import com.admin.entity.Forward;
 import com.admin.entity.InboundLine;
@@ -323,14 +324,12 @@ public class ResetFlowAsync {
         Tunnel tunnel = tunnelService.getById(forward.getTunnelId());
         if (tunnel == null) return;
 
-        GostUtil.PauseService(tunnel.getInNodeId(), buildServiceName(forward.getId(), forward.getUserId(), userTunnelId));
+        // 先按原名停,节点回「原名 not found」才按 _0 再停(协议/线路转发建的时候恒为 _0)。
+        // userTunnelId 为 null 时以前拼成 "x_y_null",节点上根本没有这个名字 —— 现在按 0 算。
+        List<String> names = GostDeleteFallback.candidateNames(forward.getId(), forward.getUserId(), userTunnelId);
+        GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(tunnel.getInNodeId(), n));
         if (tunnel.getType() == 2){
-            GostUtil.PauseRemoteService(tunnel.getOutNodeId(), buildServiceName(forward.getId(), forward.getUserId(), userTunnelId));
+            GostDeleteFallback.firstFound(names, n -> GostUtil.PauseRemoteService(tunnel.getOutNodeId(), n));
         }
-    }
-
-
-    private String buildServiceName(Long forwardId, Integer userId, Integer userTunnelId) {
-        return forwardId + "_" + userId + "_" + userTunnelId;
     }
 }
