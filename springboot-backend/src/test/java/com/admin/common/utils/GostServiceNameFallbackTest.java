@@ -173,6 +173,31 @@ class GostServiceNameFallbackTest {
     }
 
     @Test
+    void userTunnelLevelPauseNeverFallsBackToZero() {
+        // 节点上只有 _0(分给车友 / 管理员建的转发):原名 not found → 跳过,_0 不动,远端一条不发
+        FakeNode in = new FakeNode();
+        FakeNode out = new FakeNode();
+        in.services.addAll(Arrays.asList("5_2_0_tcp", "5_2_0_udp"));
+        out.services.addAll(Arrays.asList("5_2_0_tcp", "5_2_0_udp"));
+        assertFalse(GostDeleteFallback.pauseByOriginalName("5_2_7", in.pause(), out.pause()));
+        assertEquals(1, in.received.size());
+        assertTrue(in.paused.isEmpty());
+        assertTrue(out.received.isEmpty());
+
+        // 原名在:停入口、远端按同一个原名停
+        in.services.addAll(Arrays.asList("6_2_7_tcp", "6_2_7_udp"));
+        out.services.addAll(Arrays.asList("6_2_7_tcp", "6_2_7_udp"));
+        assertTrue(GostDeleteFallback.pauseByOriginalName("6_2_7", in.pause(), out.pause()));
+        assertEquals(new HashSet<>(Arrays.asList("6_2_7_tcp", "6_2_7_udp")), in.paused);
+        assertEquals(new HashSet<>(Arrays.asList("6_2_7_tcp", "6_2_7_udp")), out.paused);
+
+        // 离线等其它错误:和老版本一样当作「停了」(调用方照旧写库)
+        FakeNode off = new FakeNode();
+        off.offline = true;
+        assertTrue(GostDeleteFallback.pauseByOriginalName("5_2_7", off.pause(), null));
+    }
+
+    @Test
     void nullUserTunnelIdIsZeroNotNull() {
         // ResetFlowAsync 以前拿 null 拼出 "5_2_null"
         assertEquals(Collections.singletonList("5_2_0"), GostDeleteFallback.candidateNames(5L, 2, null));

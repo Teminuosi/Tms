@@ -433,7 +433,22 @@ public class FlowController extends BaseController {
     private void pauseSpecificForward(Integer tunnelId, String name, String userId) {
         // 隧道权限超额/到期/停用只停这条隧道上的普通转发;协议/线路转发只看线路自己,见 ProtocolForwards
         List<Forward> forwardList = ProtocolForwards.listExcluding(forwardService::list, () -> new QueryWrapper<Forward>().eq("tunnel_id", tunnelId).eq("user_id", userId));
-        pauseService(forwardList, name);
+        // 隧道权限这一级只按原名停,不走 _0 兜底;节点回原名 not found 就跳过,库里 status 也不改。
+        // 名字是 _0 的转发(分给车友的、管理员建的)不归这条隧道权限管,老版本对它们本来就停不掉。
+        for (Forward forward : forwardList) {
+            Tunnel tunnel = tunnelService.getById(forward.getTunnelId());
+            if (tunnel != null) {
+                String svc = serviceNamesOf(forward).get(0);
+                boolean found = GostDeleteFallback.pauseByOriginalName(svc,
+                        n -> GostUtil.PauseService(tunnel.getInNodeId(), n),
+                        tunnel.getType() == 2 ? n -> GostUtil.PauseRemoteService(tunnel.getOutNodeId(), n) : null);
+                if (!found) {
+                    continue;
+                }
+            }
+            forward.setStatus(0);
+            forwardService.updateById(forward);
+        }
     }
 
     /**
@@ -453,9 +468,11 @@ public class FlowController extends BaseController {
                 // 先按原名停,节点回「原名 not found」才按 _0 再停 ——
                 // 协议/线路转发建的时候恒为 _0,车友在那条隧道上另有 user_tunnel 时原名对不上
                 List<String> names = serviceNamesOf(forward);
-                GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(tunnel.getInNodeId(), n));
+                String[] used = new String[1];
+                GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(tunnel.getInNodeId(), n), used);
                 if (tunnel.getType() == 2){
-                    GostDeleteFallback.firstFound(names, n -> GostUtil.PauseRemoteService(tunnel.getOutNodeId(), n));
+                    // 远端用入口实际命中的名字停,不再自己另找一遍(否则可能停到同端口的孤儿远端上)
+                    GostUtil.PauseRemoteService(tunnel.getOutNodeId(), used[0]);
                 }
             }
             forward.setStatus(0);

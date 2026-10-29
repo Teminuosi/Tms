@@ -619,25 +619,26 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         List<String> names = serviceNameCandidates(forward, userTunnel);
         Long inNodeId = nodeInfo.getInNode().getId();
         GostDto gostResult;
+        String[] used = new String[1];
 
         if ("PauseService".equals(gostMethod)) {
-            gostResult = GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(inNodeId, n));
+            gostResult = GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(inNodeId, n), used);
 
-            // 隧道转发需要同时暂停远端服务
+            // 隧道转发需要同时暂停远端服务(用入口实际命中的名字,不再另找一遍)
             if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD && nodeInfo.getOutNode() != null) {
                 Long outNodeId = nodeInfo.getOutNode().getId();
-                GostDto remoteResult = GostDeleteFallback.firstFound(names, n -> GostUtil.PauseRemoteService(outNodeId, n));
+                GostDto remoteResult = GostUtil.PauseRemoteService(outNodeId, used[0]);
                 if (!isGostOperationSuccess(remoteResult)) {
                     return R.err(operation + "远端服务失败：" + remoteResult.getMsg());
                 }
             }
         } else {
-            gostResult = GostDeleteFallback.firstFound(names, n -> GostUtil.ResumeService(inNodeId, n));
+            gostResult = GostDeleteFallback.firstFound(names, n -> GostUtil.ResumeService(inNodeId, n), used);
 
-            // 隧道转发需要同时恢复远端服务
+            // 隧道转发需要同时恢复远端服务(用入口实际命中的名字,不再另找一遍)
             if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD && nodeInfo.getOutNode() != null) {
                 Long outNodeId = nodeInfo.getOutNode().getId();
-                GostDto remoteResult = GostDeleteFallback.firstFound(names, n -> GostUtil.ResumeRemoteService(outNodeId, n));
+                GostDto remoteResult = GostUtil.ResumeRemoteService(outNodeId, used[0]);
                 if (!isGostOperationSuccess(remoteResult)) {
                     return R.err(operation + "远端服务失败：" + remoteResult.getMsg());
                 }
@@ -1759,10 +1760,11 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             // 和 changeForwardStatus 一样:先按原名停,原名 not found 才按 _0
             List<String> names = serviceNameCandidates(forward, userTunnel);
             Long inNodeId = nodeInfo.getInNode().getId();
-            GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(inNodeId, n));
+            String[] used = new String[1];
+            GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(inNodeId, n), used);
             if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD && nodeInfo.getOutNode() != null) {
-                Long outNodeId = nodeInfo.getOutNode().getId();
-                GostDeleteFallback.firstFound(names, n -> GostUtil.PauseRemoteService(outNodeId, n));
+                // 远端用入口实际命中的名字停,不再另找一遍(否则可能停到同端口的孤儿远端上)
+                GostUtil.PauseRemoteService(nodeInfo.getOutNode().getId(), used[0]);
             }
         }
         return R.ok();
