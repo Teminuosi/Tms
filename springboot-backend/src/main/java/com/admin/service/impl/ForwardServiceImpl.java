@@ -1717,14 +1717,25 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
 
     public void updateForwardA(Forward forward) {
+        repushForward(forward);
+    }
+
+    /**
+     * 按库里现有的样子把一条转发重新下发到节点(限速、到期、暂停都照旧),不写库。
+     * 成功后库里是暂停的就再停一次:gost 的 UpdateService 是关掉旧服务再起新的,
+     * 不保留暂停标记,不补这一步暂停着的转发会被拉起来、库里却还显示暂停。
+     * 下发失败时和以前一样由 updateGostServices 把转发标成 -1。
+     */
+    @Override
+    public R repushForward(Forward forward) {
         Tunnel tunnel = validateTunnel(forward.getTunnelId());
         if (tunnel == null) {
-            return;
+            return R.err("隧道不存在");
         }
         UserTunnel userTunnel = getUserTunnel(forward.getUserId(), tunnel.getId().intValue());
         NodeInfo nodeInfo = getRequiredNodes(tunnel);
         if (nodeInfo.isHasError()) {
-            return;
+            return R.err(nodeInfo.getErrorMessage());
         }
         Integer limiter;
         if (userTunnel == null) {
@@ -1735,7 +1746,21 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         // 只有协议/线路续费在调(InboundServiceImpl),这些转发都是 createForwardForUser 建的(名字 _0,
         // 限速只认 forward.speedId)。命中原名时限速照旧(老版本可能在 _0 暂停时按原名 Add 出过一条,
         // 那条一直按这个限速在跑,不能动);落到 _0 时限速和创建时一致,不顺手挂上隧道权限的限速。
-        updateGostServices(forward, tunnel, resolveLimiter(forward, limiter), nodeInfo, userTunnel, resolveLimiter(forward, null));
+        R r = updateGostServices(forward, tunnel, resolveLimiter(forward, limiter), nodeInfo, userTunnel, resolveLimiter(forward, null));
+        if (r.getCode() != 0) {
+            return r;
+        }
+        if (forward.getStatus() != null && forward.getStatus() == FORWARD_STATUS_PAUSED) {
+            // 和 changeForwardStatus 一样:先按原名停,原名 not found 才按 _0
+            List<String> names = serviceNameCandidates(forward, userTunnel);
+            Long inNodeId = nodeInfo.getInNode().getId();
+            GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(inNodeId, n));
+            if (tunnel.getType() == TUNNEL_TYPE_TUNNEL_FORWARD && nodeInfo.getOutNode() != null) {
+                Long outNodeId = nodeInfo.getOutNode().getId();
+                GostDeleteFallback.firstFound(names, n -> GostUtil.PauseRemoteService(outNodeId, n));
+            }
+        }
+        return R.ok();
     }
 
 

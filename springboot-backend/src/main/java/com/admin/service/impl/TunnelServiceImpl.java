@@ -20,6 +20,7 @@ import com.admin.service.TunnelService;
 import com.admin.service.UserTunnelService;
 import com.alibaba.fastjson.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import lombok.Data;
 import org.apache.commons.lang3.StringUtils;
@@ -202,18 +203,20 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
             List<Forward> tunnel = forwardService.list(new QueryWrapper<Forward>().eq("tunnel_id", tunnelUpdateDto.getId()));
             if (!tunnel.isEmpty()) {
                 for (Forward forward : tunnel) {
-                    ForwardUpdateDto forwardUpdateDto = new ForwardUpdateDto();
-                    forwardUpdateDto.setId(forward.getId());
-                    forwardUpdateDto.setUserId(forward.getUserId());
-                    forwardUpdateDto.setName(forward.getName());
-                    forwardUpdateDto.setTunnelId(forward.getTunnelId());
-                    forwardUpdateDto.setRemoteAddr(forward.getRemoteAddr());
-                    forwardUpdateDto.setStrategy(forward.getStrategy());
-                    forwardUpdateDto.setInPort(forward.getInPort());
-                    forwardUpdateDto.setInterfaceName(forward.getInterfaceName());
-                    R r = forwardService.updateForward(forwardUpdateDto);
+                    // 以前这里拼一个 ForwardUpdateDto 走 updateForward:DTO 里没有 speedId / expTime,
+                    // 这两列是 IGNORED 策略 → 车友的限速和到期被清空、节点上限速器也摘掉;
+                    // 还会 setStatus(1),暂停的转发被拉起来。现在按库里原样重推,不写库。
+                    if (existingTunnel.getStatus() == null || existingTunnel.getStatus() != 1) {
+                        err++; // 和以前 updateForward 的「隧道已禁用,无法更新转发」一致
+                        continue;
+                    }
+                    R r = forwardService.repushForward(forward);
                     if (r.getCode() != 0){
                         err++;
+                    } else if (forward.getStatus() != null && forward.getStatus() == -1) {
+                        // 之前下发失败标成 -1 的,这次推成功了 —— 和以前一样改回正常(只动 status 这一列)
+                        forwardService.update(new UpdateWrapper<Forward>().eq("id", forward.getId())
+                                .set("status", 1).set("updated_time", System.currentTimeMillis()));
                     }
                 }
             }

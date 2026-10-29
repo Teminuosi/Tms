@@ -1655,8 +1655,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         if (r.getCode() != 0) {
             return null;
         }
+        // 建完回查也要按名字认:以前这里漏了名字,机器上已有手建的端口转发隧道时,
+        // 第一次分配协议的转发会落进那条手建隧道(之后的分配走上面按名字查,才进自动隧道)
         return tunnelMapper.selectOne(new QueryWrapper<Tunnel>()
-                .eq("in_node_id", nodeId).eq("type", TUNNEL_TYPE_PORT_FORWARD).last("limit 1"));
+                .eq("in_node_id", nodeId).eq("type", TUNNEL_TYPE_PORT_FORWARD)
+                .eq("name", name).last("limit 1"));
     }
 
     /** 分配 sing-box 本机监听口(40000+,避开 gost 公网口段) */

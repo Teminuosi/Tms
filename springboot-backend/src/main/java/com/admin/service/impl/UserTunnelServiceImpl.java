@@ -12,8 +12,10 @@ import com.admin.service.TunnelService;
 import com.admin.service.UserTunnelService;
 import com.admin.service.ForwardService;
 import com.admin.service.NodeService;
+import com.admin.common.dto.GostDto;
 import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
+import com.admin.common.utils.ProtocolForwards;
 import com.admin.entity.Forward;
 import com.admin.entity.Tunnel;
 import com.admin.entity.Node;
@@ -28,6 +30,7 @@ import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -320,18 +323,23 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
             }
 
             // 2. 如果是隧道转发，删除远端服务
-            if (tunnel.getType() == 1 && outNode != null && !outNode.getId().equals(inNode != null ? inNode.getId() : null)) {
+            // 隧道转发是 type=2(1 是端口转发,没有远端和链)。以前这里写成 type==1,
+            // 删隧道权限时隧道转发的远端服务和链从来没删过,一直留在节点上。
+            // 远端跟入口在同一台机时远端服务照样存在(xx_tls),所以不再跳过。
+            if (tunnel.getType() == 2 && outNode != null) {
                 try {
-                    GostUtil.DeleteRemoteService(outNode.getId(), names.get(0));
+                    Long outNodeId = outNode.getId();
+                    GostDeleteFallback.delete(names, n -> GostUtil.DeleteRemoteService(outNodeId, n), Collections.emptyList());
                 } catch (Exception e) {
                     // 远端服务删除失败，记录但继续
                 }
             }
 
             // 3. 如果是隧道转发，最后删除转发链
-            if (tunnel.getType() == 1 && inNode != null) {
+            if (tunnel.getType() == 2 && inNode != null) {
                 try {
-                    GostUtil.DeleteChains(inNode.getId(), names.get(0));
+                    Long inNodeId = inNode.getId();
+                    GostDeleteFallback.delete(names, n -> GostUtil.DeleteChains(inNodeId, n), Collections.emptyList());
                 } catch (Exception e) {
                     // 转发链删除失败，记录但继续
                 }
@@ -413,7 +421,8 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
         // 1. 查询该用户在该隧道下的所有转发
         QueryWrapper<Forward> queryWrapper = new QueryWrapper<>();
         queryWrapper.eq("user_id", userId).eq("tunnel_id", tunnelId);
-        List<Forward> userTunnelForwards = forwardService.list(queryWrapper);
+        // 隧道权限的限速不套到协议/线路转发上(它们的限速只认线路自己的),见 ProtocolForwards
+        List<Forward> userTunnelForwards = forwardService.list(ProtocolForwards.exclude(queryWrapper));
 
         if (userTunnelForwards.isEmpty()) {
             return;
@@ -449,7 +458,13 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
             }
 
             // 6. 更新入口节点的主服务限速配置（使用批量UpdateService接口）
-            GostUtil.UpdateService(inNode.getId(), serviceName, forward.getInPort(), speedId, forward.getRemoteAddr(), tunnel.getType(), tunnel, forward.getStrategy(), interfaceName);
+            GostDto r = GostUtil.UpdateService(inNode.getId(), serviceName, forward.getInPort(), speedId, forward.getRemoteAddr(), tunnel.getType(), tunnel, forward.getStrategy(), interfaceName);
+
+            // gost 的 UpdateService 是关掉旧服务再起新的,暂停标记不保留 —— 暂停着的转发会被拉起来。
+            // 库里是暂停的,就按同一个名字再停一次(只停主服务:这里也只更新了主服务)。
+            if (GostDeleteFallback.isOk(r) && forward.getStatus() != null && forward.getStatus() == 0) {
+                GostUtil.PauseService(inNode.getId(), serviceName);
+            }
         }
     }
 }
