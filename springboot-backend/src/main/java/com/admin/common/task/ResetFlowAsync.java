@@ -310,7 +310,7 @@ public class ResetFlowAsync {
         // 查询对应转发
         for (UserTunnel userTunnel : user_tunnel_list) {
             // 协议/线路转发不归隧道权限管(只看线路自己的状态和到期),见 ProtocolForwards
-            List<Forward> forwardList = forwardService.list(ProtocolForwards.exclude(new QueryWrapper<Forward>().eq("tunnel_id", userTunnel.getTunnelId()).eq("user_id", userTunnel.getUserId()).eq("status", 1)));
+            List<Forward> forwardList = ProtocolForwards.listExcluding(forwardService::list, () -> new QueryWrapper<Forward>().eq("tunnel_id", userTunnel.getTunnelId()).eq("user_id", userTunnel.getUserId()).eq("status", 1));
             for (Forward forward : forwardList) {
                 pauseForwardService(forward, userTunnel.getId());
                 forward.setStatus(0);
