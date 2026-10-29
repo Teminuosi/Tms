@@ -312,7 +312,10 @@ public class ResetFlowAsync {
             // 协议/线路转发不归隧道权限管(只看线路自己的状态和到期),见 ProtocolForwards
             List<Forward> forwardList = ProtocolForwards.listExcluding(forwardService::list, () -> new QueryWrapper<Forward>().eq("tunnel_id", userTunnel.getTunnelId()).eq("user_id", userTunnel.getUserId()).eq("status", 1));
             for (Forward forward : forwardList) {
-                pauseForwardService(forward, userTunnel.getId());
+                // 隧道权限这一级只按原名停,节点回 not found(名字是 _0 的转发)就跳过、库里也不改,见 GostDeleteFallback.pauseByOriginalName
+                if (!pauseForwardServiceByOriginalName(forward, userTunnel.getId())) {
+                    continue;
+                }
                 forward.setStatus(0);
                 forwardService.updateById(forward);
             }
@@ -329,9 +332,21 @@ public class ResetFlowAsync {
         // 先按原名停,节点回「原名 not found」才按 _0 再停(协议/线路转发建的时候恒为 _0)。
         // userTunnelId 为 null 时以前拼成 "x_y_null",节点上根本没有这个名字 —— 现在按 0 算。
         List<String> names = GostDeleteFallback.candidateNames(forward.getId(), forward.getUserId(), userTunnelId);
-        GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(tunnel.getInNodeId(), n));
+        String[] used = new String[1];
+        GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(tunnel.getInNodeId(), n), used);
         if (tunnel.getType() == 2){
-            GostDeleteFallback.firstFound(names, n -> GostUtil.PauseRemoteService(tunnel.getOutNodeId(), n));
+            // 远端用入口实际命中的名字停,不再自己另找一遍(否则可能停到同端口的孤儿远端上)
+            GostUtil.PauseRemoteService(tunnel.getOutNodeId(), used[0]);
         }
+    }
+
+    /** 隧道权限这一级:只按原名停;返回 false = 节点回原名 not found,这条跳过(节点、库都不动)。 */
+    private boolean pauseForwardServiceByOriginalName(Forward forward, Integer userTunnelId) {
+        Tunnel tunnel = tunnelService.getById(forward.getTunnelId());
+        if (tunnel == null) return true;
+        String name = forward.getId() + "_" + forward.getUserId() + "_" + userTunnelId;
+        return GostDeleteFallback.pauseByOriginalName(name,
+                n -> GostUtil.PauseService(tunnel.getInNodeId(), n),
+                tunnel.getType() == 2 ? n -> GostUtil.PauseRemoteService(tunnel.getOutNodeId(), n) : null);
     }
 }

@@ -138,9 +138,13 @@ def main():
             if paused(s):
                 continue
             have = s.get('limiter')
-            if str(have or '') != str(want_limiter or ''):
+            want = want_limiter
+            # 隧道权限的限速只挂在 _{隧道权限id} 这个名字上;_0(分给车友 / 管理员建 / 协议)只认转发自己的限速
+            if f['speed_id'] is None and (ut is None or u != to_int(ut['id'])):
+                want = None
+            if str(have or '') != str(want or ''):
                 out['②'].append('%s 节点%s 上 %s 挂的限速器=%s,库里该挂=%s%s' % (
-                    tag, in_node, s['name'], have, want_limiter,
+                    tag, in_node, s['name'], have, want,
                     '(协议转发只认转发自己的限速)' if is_protocol else ''))
 
         # ③ 多份服务

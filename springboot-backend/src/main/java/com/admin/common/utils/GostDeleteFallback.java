@@ -92,6 +92,26 @@ public final class GostDeleteFallback {
     }
 
     /**
+     * 隧道权限(user_tunnel)这一级的批量暂停(到期 / 超额 / 停用):只按原名 {fid}_{uid}_{utId} 发,不走 _0 兜底。
+     * 节点回「原名 not found」→ 返回 false,调用方跳过这条转发:节点上不动,库里 status 也不改。
+     * 名字是 _0 的转发(分给车友的、管理员建的、协议的)不归这条隧道权限管 —— 老版本对它们本来就停不掉,
+     * 这样节点上的效果和老版本一致,也不再写出「库里停了、节点还在跑」的状态。
+     * 其它结果(成功、离线、超时)和老版本一样:远端按同一个原名停,返回 true(调用方照旧写库)。
+     *
+     * @param pauseRemote 隧道转发才传(停出口机上的远端服务),否则传 null
+     */
+    public static boolean pauseByOriginalName(String name, Function<String, GostDto> pauseIn, Function<String, GostDto> pauseRemote) {
+        GostDto r = pauseIn.apply(name);
+        if (isNotFound(r, name)) {
+            return false;
+        }
+        if (pauseRemote != null) {
+            pauseRemote.apply(name);
+        }
+        return true;
+    }
+
+    /**
      * @param candidates candidateNames 的结果,第一个是原名
      * @param whole      原来的整条删除命令(按名字)
      * @param pieces     逐个子服务删除(如 _tcp、_udp 各一条);只有一个实体时传空列表
