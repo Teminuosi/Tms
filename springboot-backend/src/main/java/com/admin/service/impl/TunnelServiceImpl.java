@@ -210,6 +210,16 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
                         err++; // 和以前 updateForward 的「隧道已禁用,无法更新转发」一致
                         continue;
                     }
+                    // 每条现查一次:前面的转发每条可能要等节点 10 秒,列表是循环前查的,状态会旧。
+                    // 流量清空不带进去:下发失败时 updateGostServices 会 updateById 把 -1 写回去,
+                    // 带着旧流量就会把这期间节点上报累加的流量覆盖掉(以前传 DTO 拼的残缺对象,也不写流量)
+                    Forward fresh = forwardService.getById(forward.getId());
+                    if (fresh == null) {
+                        continue;
+                    }
+                    fresh.setInFlow(null);
+                    fresh.setOutFlow(null);
+                    forward = fresh;
                     R r = forwardService.repushForward(forward);
                     if (r.getCode() != 0){
                         err++;

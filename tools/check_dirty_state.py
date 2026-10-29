@@ -40,6 +40,8 @@ def run_sql(cmd, sql):
     if not lines:
         return []
     head = lines[0].split('\t')
+    if not any(h in ('id', 'gost_forward_id') for h in head):
+        sys.exit('查库结果第一行不是列名(--mysql 里别加 -N / --skip-column-names)')
     rows = []
     for l in lines[1:]:
         vals = [None if v == 'NULL' else v for v in l.split('\t')]

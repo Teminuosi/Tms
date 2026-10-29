@@ -1717,7 +1717,8 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
 
     public void updateForwardA(Forward forward) {
-        repushForward(forward);
+        // 和以前一样只重推、不补停:调用方(续费)自己决定之后是恢复还是停
+        repush(forward, false);
     }
 
     /**
@@ -1728,6 +1729,10 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
      */
     @Override
     public R repushForward(Forward forward) {
+        return repush(forward, true);
+    }
+
+    private R repush(Forward forward, boolean repauseIfPaused) {
         Tunnel tunnel = validateTunnel(forward.getTunnelId());
         if (tunnel == null) {
             return R.err("隧道不存在");
@@ -1750,7 +1755,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         if (r.getCode() != 0) {
             return r;
         }
-        if (forward.getStatus() != null && forward.getStatus() == FORWARD_STATUS_PAUSED) {
+        if (repauseIfPaused && forward.getStatus() != null && forward.getStatus() == FORWARD_STATUS_PAUSED) {
             // 和 changeForwardStatus 一样:先按原名停,原名 not found 才按 _0
             List<String> names = serviceNameCandidates(forward, userTunnel);
             Long inNodeId = nodeInfo.getInNode().getId();

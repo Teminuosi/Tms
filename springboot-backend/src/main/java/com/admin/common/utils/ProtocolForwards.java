@@ -2,6 +2,10 @@ package com.admin.common.utils;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 
+import java.util.List;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
 /**
  * 协议/线路转发的认法:inbound_user.gost_forward_id 指向的那条转发。
  *
@@ -25,5 +29,37 @@ public final class ProtocolForwards {
     /** 在按 user_tunnel 查转发的条件上排除协议/线路转发 */
     public static <T> QueryWrapper<T> exclude(QueryWrapper<T> qw) {
         return qw.notInSql("id", IDS_SQL);
+    }
+
+    /**
+     * 按条件查转发,排除协议/线路转发。
+     * 老部署走 update 升级上来、从没建过协议的,库里可能根本没有 inbound_user 表 ——
+     * 那就不存在协议转发,按原条件查(和以前一模一样),不能因为子查询报错把隧道权限检查/流量上报弄挂。
+     * 其它错误照常抛。
+     *
+     * @param where 每次调用返回一个新的查询条件(排除失败时要用干净的条件重查)
+     */
+    public static <T> List<T> listExcluding(Function<QueryWrapper<T>, List<T>> lister, Supplier<QueryWrapper<T>> where) {
+        try {
+            return lister.apply(exclude(where.get()));
+        } catch (RuntimeException e) {
+            if (!mentionsInboundUser(e)) {
+                throw e;
+            }
+            return lister.apply(where.get());
+        }
+    }
+
+    private static boolean mentionsInboundUser(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            String m = t.getMessage();
+            if (m != null && m.contains("inbound_user") && m.contains("doesn't exist")) {
+                return true;
+            }
+            if (t.getCause() == t) {
+                break;
+            }
+        }
+        return false;
     }
 }

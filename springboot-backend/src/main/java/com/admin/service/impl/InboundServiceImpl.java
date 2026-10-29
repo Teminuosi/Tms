@@ -1344,6 +1344,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
         }
 
+        // 这次重推过的转发:gost 的 UpdateService 会把暂停着的服务拉起来(不保留暂停标记)
+        java.util.Set<Long> pushed = new java.util.HashSet<>();
         for (Forward f : forwards) {
             boolean touched = false;
             if (expTime != null) {
@@ -1358,6 +1360,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 forwardService.updateById(f);
                 // 推到节点:限速换了要立刻生效,只写库的话面板显示改了、实际没限住
                 try {
+                    pushed.add(f.getId());
                     forwardService.updateForwardA(f);
                 } catch (Exception e) {
                     // 节点掉线时不该让整笔续费失败 —— 额度和到期是面板侧判的,已经写进去了;
@@ -1396,6 +1399,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             } else if (!shouldRun && running) {
                 forwardService.pauseForward(f.getId());
                 touchedFwd++;
+            } else if (!shouldRun && pushed.contains(f.getId())) {
+                // 库里本来就停着,但上面重推把节点上的服务拉起来了 —— 再停一次,不计入 touchedFwd
+                forwardService.pauseForward(f.getId());
             }
         }
 

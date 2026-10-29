@@ -419,10 +419,9 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
      */
     private void updateUserTunnelForwardsSpeed(Integer userId, Integer tunnelId, Integer speedId) {
         // 1. 查询该用户在该隧道下的所有转发
-        QueryWrapper<Forward> queryWrapper = new QueryWrapper<>();
-        queryWrapper.eq("user_id", userId).eq("tunnel_id", tunnelId);
         // 隧道权限的限速不套到协议/线路转发上(它们的限速只认线路自己的),见 ProtocolForwards
-        List<Forward> userTunnelForwards = forwardService.list(ProtocolForwards.exclude(queryWrapper));
+        List<Forward> userTunnelForwards = ProtocolForwards.listExcluding(forwardService::list,
+                () -> new QueryWrapper<Forward>().eq("user_id", userId).eq("tunnel_id", tunnelId));
 
         if (userTunnelForwards.isEmpty()) {
             return;
