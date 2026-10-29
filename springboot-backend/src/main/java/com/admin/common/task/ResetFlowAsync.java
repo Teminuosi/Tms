@@ -1,8 +1,8 @@
 package com.admin.common.task;
 
+import com.admin.common.utils.AutoPauseSkips;
 import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
-import com.admin.common.utils.ProtocolForwards;
 import com.admin.entity.Forward;
 import com.admin.entity.InboundLine;
 import com.admin.entity.InboundUser;
@@ -102,12 +102,15 @@ public class ResetFlowAsync {
     @Scheduled(cron = "0 * * * * ?")
     public void forwardExpiry() {
         try {
-            List<Forward> list = forwardService.list(new QueryWrapper<Forward>()
-                    .eq("status", 1).isNotNull("exp_time").gt("exp_time", 0).lt("exp_time", new Date().getTime()));
+            List<Forward> list = AutoPauseSkips.withoutTreatedAsPaused(forwardService.list(new QueryWrapper<Forward>()
+                    .eq("status", 1).isNotNull("exp_time").gt("exp_time", 0).lt("exp_time", new Date().getTime())));
             for (Forward forward : list) {
                 UserTunnel ut = userTunnelService.getOne(new QueryWrapper<UserTunnel>()
                         .eq("user_id", forward.getUserId()).eq("tunnel_id", forward.getTunnelId()));
-                pauseForwardService(forward, ut != null ? ut.getId() : null);
+                // 没有 user_tunnel 时老版本拼成 "x_y_null",节点上没有这个名字 —— 照发、not found 就跳过,和老版本对节点的效果一样
+                if (!pauseForwardServiceByOriginalName(forward, ut != null ? ut.getId() : null)) {
+                    continue;
+                }
                 forward.setStatus(0);
                 forwardService.updateById(forward);
             }
@@ -289,11 +292,13 @@ public class ResetFlowAsync {
         List<User> user_list = userService.list(new QueryWrapper<User>().ne("role_id", 0).eq("status", 1).isNotNull("exp_time").gt("exp_time", 0).lt("exp_time", new Date().getTime()));
         for (User user : user_list) {
             // 查询对应转发
-            List<Forward> forwardList = forwardService.list(new QueryWrapper<Forward>().eq("user_id", user.getId()).eq("status", 1));
+            List<Forward> forwardList = AutoPauseSkips.withoutTreatedAsPaused(forwardService.list(new QueryWrapper<Forward>().eq("user_id", user.getId()).eq("status", 1)));
             for (Forward forward : forwardList) {
                 UserTunnel userTunnel = userTunnelService.getOne(new QueryWrapper<UserTunnel>().eq("user_id", forward.getUserId()).eq("tunnel_id", forward.getTunnelId()));
                 if (userTunnel != null) {
-                    pauseForwardService(forward, userTunnel.getId());
+                    if (!pauseForwardServiceByOriginalName(forward, userTunnel.getId())) {
+                        continue;
+                    }
                     forward.setStatus(0);
                     forwardService.updateById(forward);
                 }
@@ -309,10 +314,9 @@ public class ResetFlowAsync {
         List<UserTunnel> user_tunnel_list = userTunnelService.list(new QueryWrapper<UserTunnel>().eq("status", 1).isNotNull("exp_time").gt("exp_time", 0).lt("exp_time", new Date().getTime()));
         // 查询对应转发
         for (UserTunnel userTunnel : user_tunnel_list) {
-            // 协议/线路转发不归隧道权限管(只看线路自己的状态和到期),见 ProtocolForwards
-            List<Forward> forwardList = ProtocolForwards.listExcluding(forwardService::list, () -> new QueryWrapper<Forward>().eq("tunnel_id", userTunnel.getTunnelId()).eq("user_id", userTunnel.getUserId()).eq("status", 1));
+            List<Forward> forwardList = AutoPauseSkips.withoutTreatedAsPaused(forwardService.list(new QueryWrapper<Forward>().eq("tunnel_id", userTunnel.getTunnelId()).eq("user_id", userTunnel.getUserId()).eq("status", 1)));
             for (Forward forward : forwardList) {
-                // 隧道权限这一级只按原名停,节点回 not found(名字是 _0 的转发)就跳过、库里也不改,见 GostDeleteFallback.pauseByOriginalName
+                // 只按原名停,节点回 not found(名字是 _0 的转发)就跳过、库里也不改,见 GostDeleteFallback.pauseByOriginalName
                 if (!pauseForwardServiceByOriginalName(forward, userTunnel.getId())) {
                     continue;
                 }
@@ -325,28 +329,20 @@ public class ResetFlowAsync {
     }
 
 
-    private void pauseForwardService(Forward forward, Integer userTunnelId) {
-        Tunnel tunnel = tunnelService.getById(forward.getTunnelId());
-        if (tunnel == null) return;
-
-        // 先按原名停,节点回「原名 not found」才按 _0 再停(协议/线路转发建的时候恒为 _0)。
-        // userTunnelId 为 null 时以前拼成 "x_y_null",节点上根本没有这个名字 —— 现在按 0 算。
-        List<String> names = GostDeleteFallback.candidateNames(forward.getId(), forward.getUserId(), userTunnelId);
-        String[] used = new String[1];
-        GostDeleteFallback.firstFound(names, n -> GostUtil.PauseService(tunnel.getInNodeId(), n), used);
-        if (tunnel.getType() == 2){
-            // 远端用入口实际命中的名字停,不再自己另找一遍(否则可能停到同端口的孤儿远端上)
-            GostUtil.PauseRemoteService(tunnel.getOutNodeId(), used[0]);
-        }
-    }
-
-    /** 隧道权限这一级:只按原名停;返回 false = 节点回原名 not found,这条跳过(节点、库都不动)。 */
+    /**
+     * 自动批量停:只按老版本的原名 {fid}_{uid}_{userTunnelId} 发(userTunnelId 为 null 时和老版本一样拼成 "x_y_null"),
+     * 入口 + 隧道转发的远端,不走 _0 兜底。返回 false = 节点回原名 not found,这条跳过(节点、库都不动)。
+     */
     private boolean pauseForwardServiceByOriginalName(Forward forward, Integer userTunnelId) {
         Tunnel tunnel = tunnelService.getById(forward.getTunnelId());
         if (tunnel == null) return true;
         String name = forward.getId() + "_" + forward.getUserId() + "_" + userTunnelId;
-        return GostDeleteFallback.pauseByOriginalName(name,
+        boolean found = GostDeleteFallback.pauseByOriginalName(name,
                 n -> GostUtil.PauseService(tunnel.getInNodeId(), n),
                 tunnel.getType() == 2 ? n -> GostUtil.PauseRemoteService(tunnel.getOutNodeId(), n) : null);
+        if (!found) {
+            AutoPauseSkips.remember(forward);
+        }
+        return found;
     }
 }
