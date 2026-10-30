@@ -49,4 +49,27 @@ class AutoPauseSkipsTest {
         assertTrue(AutoPauseSkips.treatedAsPaused(f(3, 1, null)));
         assertFalse(AutoPauseSkips.treatedAsPaused(f(3, 0, null)));
     }
+
+    @Test
+    void persistedAcrossRestart() {
+        java.util.Map<Long, String> db = new java.util.HashMap<>();
+        java.util.List<String> writes = new java.util.ArrayList<>();
+        AutoPauseSkips.Persist p = new AutoPauseSkips.Persist() {
+            public void save(long id, String stamp) { db.put(id, stamp); writes.add("save " + id); }
+            public void delete(long id, String stamp) { db.remove(id, stamp); writes.add("delete " + id); }
+        };
+        AutoPauseSkips.attach(p, null);
+        AutoPauseSkips.remember(f(7, 1, 100L));
+        AutoPauseSkips.remember(f(7, 1, 100L)); // 同样的记录不重复写库(流量上报每几秒都会来一次)
+        assertEquals(Collections.singletonList("save 7"), writes);
+
+        // 「重启」:内存清空,从库里装回来,照样跳过
+        AutoPauseSkips.clear();
+        AutoPauseSkips.attach(p, new java.util.HashMap<>(db));
+        assertTrue(AutoPauseSkips.treatedAsPaused(f(7, 1, 100L)));
+
+        // 别处改过 → 作废,库里那条也删
+        assertFalse(AutoPauseSkips.treatedAsPaused(f(7, 1, 200L)));
+        assertTrue(db.isEmpty());
+    }
 }

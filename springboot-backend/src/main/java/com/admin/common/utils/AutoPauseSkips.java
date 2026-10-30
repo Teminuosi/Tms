@@ -21,16 +21,35 @@ import java.util.concurrent.ConcurrentHashMap;
  * 所以这里在内存里记下「老版本此时已经把它写成 0 了」,这些任务挑转发时把它当成 status=0 跳过。
  * 只要这条转发的 status / updated_time 被别处改过(管理员手动暂停、恢复、编辑、续费都会改),
  * 记录就作废 —— 老版本里这些手动操作同样会把那个脏的 0 改掉。
- * 只在内存里,面板重启后清空(重启后第一次巡检会再按原名发一次 not found 的暂停,节点上照样不动)。
+ * 记录同时写进库里的 auto_pause_skip 表(AutoPauseSkipsStore),面板重启后读回来 ——
+ * 老版本的脏 0 在库里,重启后照样生效;只放内存的话,重启后 CheckExpiryAsync 会按 _0
+ * 把老版本一直没停的转发真停掉(真跑坐实过)。写表失败只记日志,退回只在内存。
  *
  * 不按 status 挑转发的流量上报路径(FlowController)不查这里:老版本每次上报都照发。
  */
 public final class AutoPauseSkips {
 
+    /** 持久化:由 AutoPauseSkipsStore 在启动时挂上;没挂上(或测试)时只在内存 */
+    public interface Persist {
+        void save(long forwardId, String stamp);
+
+        void delete(long forwardId, String stamp);
+    }
+
     /** forwardId → 记下时的 status|updated_time */
     private static final Map<Long, String> SKIPS = new ConcurrentHashMap<>();
 
+    private static volatile Persist persist;
+
     private AutoPauseSkips() {
+    }
+
+    /** 启动时调用:挂上持久化,并装入库里已有的记录 */
+    public static void attach(Persist p, Map<Long, String> loaded) {
+        if (loaded != null) {
+            SKIPS.putAll(loaded);
+        }
+        persist = p;
     }
 
     private static String stamp(Forward f) {
@@ -40,7 +59,12 @@ public final class AutoPauseSkips {
     /** 自动暂停按原名 not found、跳过写库时调用 */
     public static void remember(Forward f) {
         if (f != null && f.getId() != null) {
-            SKIPS.put(f.getId(), stamp(f));
+            String s = stamp(f);
+            String prev = SKIPS.put(f.getId(), s);
+            Persist p = persist;
+            if (p != null && !s.equals(prev)) {
+                p.save(f.getId(), s);
+            }
         }
     }
 
@@ -56,7 +80,12 @@ public final class AutoPauseSkips {
         if (Objects.equals(s, stamp(f))) {
             return true;
         }
-        SKIPS.remove(f.getId(), s); // 别处改过这条转发,记录作废
+        if (SKIPS.remove(f.getId(), s)) { // 别处改过这条转发,记录作废
+            Persist p = persist;
+            if (p != null) {
+                p.delete(f.getId(), s);
+            }
+        }
         return false;
     }
 
@@ -77,5 +106,6 @@ public final class AutoPauseSkips {
     /** 测试用 */
     static void clear() {
         SKIPS.clear();
+        persist = null;
     }
 }
