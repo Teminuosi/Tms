@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { CLIENT_RECOMMEND_URL } from "@/config/site";
+import { CLIENT_DOWNLOAD_URL } from "@/config/site";
 import { isAdmin } from "@/utils/auth";
 
 // 关掉后记在浏览器里,不再显示
@@ -38,7 +38,7 @@ export default function ClientRecommendBanner() {
         推荐使用 TMS 客户端管理:常用功能都在客户端里,更省事。
         <a
           className="ml-2 font-medium underline underline-offset-2 hover:opacity-80"
-          href={CLIENT_RECOMMEND_URL}
+          href={CLIENT_DOWNLOAD_URL}
           rel="noopener noreferrer"
           target="_blank"
         >

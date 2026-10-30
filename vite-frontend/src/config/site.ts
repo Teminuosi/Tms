@@ -38,9 +38,6 @@ export const siteConfig = getInitialConfig();
 // 博客页面按云端配置的最新版本拼 GitHub 下载地址,发版后自动跟上。
 export const CLIENT_DOWNLOAD_URL = 'https://3yuedaohang.com/tms-download.html?ref=panel';
 
-// 管理页顶部「推荐使用 TMS 客户端」提示条的下载链接(只给管理员看)
-export const CLIENT_RECOMMEND_URL = 'https://3yuedaohang.com/proxy-download';
-
 // 缓存工具函数
 export const configCache = {
   // 获取缓存的配置
