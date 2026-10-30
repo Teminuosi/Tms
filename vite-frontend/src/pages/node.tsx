@@ -570,8 +570,12 @@ export default function NodePage() {
         .filter(ip => ip)
         .join(',');
         
+      // 校验时 trim 过,提交时也要 trim:粘贴带出的空格会进库,拼出的链接里多一个空格,客户端导不进去
+      const serverIp = form.serverIp.trim();
       const submitData = {
         ...form,
+        serverIp,
+        domain: form.domain.trim(),
         ip: ipString
       };
       delete (submitData as any).ipString;
@@ -580,7 +584,7 @@ export default function NodePage() {
       const data = isEdit ? submitData : { 
         name: form.name, 
         ip: ipString,
-        serverIp: form.serverIp,
+        serverIp,
         domain: form.domain.trim(),
         portSta: form.portSta,
         portEnd: form.portEnd,
@@ -600,7 +604,7 @@ export default function NodePage() {
               ...n,
               name: form.name,
               ip: ipString,
-              serverIp: form.serverIp,
+              serverIp,
               domain: form.domain.trim(),
               portSta: form.portSta,
               portEnd: form.portEnd,

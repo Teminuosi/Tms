@@ -1,5 +1,6 @@
 package com.admin.service.impl;
 
+import cn.hutool.core.util.StrUtil;
 import com.admin.common.dto.ForwardDto;
 import com.admin.common.dto.ForwardUpdateDto;
 import com.admin.common.dto.ForwardWithTunnelDto;
@@ -705,7 +706,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             }
 
             // 入口TCP ping出口（使用转发的出口端口）
-            DiagnosisResult inToOutResult = performTcpPingDiagnosis(inNode, outNode.getServerIp(), forward.getOutPort(), "入口->出口");
+            DiagnosisResult inToOutResult = performTcpPingDiagnosis(inNode, StrUtil.trim(outNode.getServerIp()), forward.getOutPort(), "入口->出口");
             results.add(inToOutResult);
 
             // 出口TCP ping目标
@@ -1441,6 +1442,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
      * 创建链服务
      */
     private R createChainService(Node inNode, String serviceName, String outIp, Integer outPort, String protocol, String interfaceName) {
+        outIp = StrUtil.trim(outIp); // 老数据的隧道 out_ip 可能带空格,"IP :端口" gost 解析不了
         String remoteAddr = outIp + ":" + outPort;
         if (outIp.contains(":")) {
             remoteAddr = "[" + outIp + "]:" + outPort;
@@ -1470,6 +1472,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
      */
     private R updateChainService(Node inNode, List<String> names, String outIp, Integer outPort, String protocol, String interfaceName, String[] used) {
         String serviceName = names.get(0);
+        outIp = StrUtil.trim(outIp); // 老数据的隧道 out_ip 可能带空格
         // 创建新链
         String remoteAddr = outIp + ":" + outPort;
         if (outIp.contains(":")) {

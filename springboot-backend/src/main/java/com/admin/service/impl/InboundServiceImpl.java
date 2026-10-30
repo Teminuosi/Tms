@@ -908,7 +908,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
             String ip = (node.getDomain() != null && !node.getDomain().trim().isEmpty())
                     ? node.getDomain().trim()
-                    : node.getServerIp();
+                    : (node.getServerIp() == null ? null : node.getServerIp().trim()); // 老数据里可能存了带空格的 IP
             String ssMethod = null;
             if ("shadowsocks".equals(in.getProtocol())) {
                 JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
@@ -1000,7 +1000,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         // 转发机配了域名就用域名 —— 车友在客户端里看到的是 hk.example.com 而不是车主的 IP
         String ip = (node.getDomain() != null && !node.getDomain().trim().isEmpty())
                 ? node.getDomain().trim()
-                : node.getServerIp();
+                : (node.getServerIp() == null ? null : node.getServerIp().trim()); // 老数据里可能存了带空格的 IP
         Integer port = forward.getInPort();
         switch (in.getProtocol() == null ? "" : in.getProtocol()) {
             case "shadowsocks": {
@@ -1721,7 +1721,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     /** 节点登记的地址是 IPv6 字面量 = 这是台 IPv6 机器 */
     private boolean isIpv6Node(Long nodeId) {
         Node node = nodeMapper.selectById(nodeId);
-        return node != null && SingboxUtil.isIpv6Literal(node.getServerIp());
+        return node != null && SingboxUtil.isIpv6Literal(node.getServerIp() == null ? null : node.getServerIp().trim());
     }
 
     /**

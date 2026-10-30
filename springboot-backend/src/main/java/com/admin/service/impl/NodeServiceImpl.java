@@ -171,7 +171,7 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         List<Tunnel> outNodeId = tunnelService.list(new QueryWrapper<Tunnel>().eq("out_node_id", updateNode.getId()));
         if (!outNodeId.isEmpty()) {
             for (Tunnel tunnel : outNodeId) {
-                tunnel.setOutIp(updateNode.getServerIp());
+                tunnel.setOutIp(StrUtil.trim(updateNode.getServerIp()));
             }
             tunnelService.updateBatchById(outNodeId);
         }
@@ -232,7 +232,11 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
     private Node buildNewNode(NodeDto nodeDto) {
         Node node = new Node();
         BeanUtils.copyProperties(nodeDto, node);
-        
+        // 地址去首尾空格:粘贴带出的空格进库后,拼出的分享链接里多一个空格,客户端导不进去
+        node.setIp(StrUtil.trim(node.getIp()));
+        node.setServerIp(StrUtil.trim(node.getServerIp()));
+        node.setDomain(StrUtil.trim(node.getDomain()));
+
         // 验证端口范围
         validatePortRange(node.getPortSta(), node.getPortEnd());
         
@@ -258,9 +262,9 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         Node node = new Node();
         node.setId(nodeUpdateDto.getId());
         node.setName(nodeUpdateDto.getName());
-        node.setIp(nodeUpdateDto.getIp());
-        node.setServerIp(nodeUpdateDto.getServerIp());
-        node.setDomain(nodeUpdateDto.getDomain());
+        node.setIp(StrUtil.trim(nodeUpdateDto.getIp()));
+        node.setServerIp(StrUtil.trim(nodeUpdateDto.getServerIp()));
+        node.setDomain(StrUtil.trim(nodeUpdateDto.getDomain()));
         node.setPortSta(nodeUpdateDto.getPortSta());
         node.setPortEnd(nodeUpdateDto.getPortEnd());
         node.setHttp(nodeUpdateDto.getHttp());

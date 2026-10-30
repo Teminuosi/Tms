@@ -133,7 +133,7 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         Tunnel tunnel = buildTunnelEntity(tunnelDto, inNodeValidation.getNode());
 
         // 5. 根据隧道类型设置出口参数
-        R outNodeSetupResult = setupOutNodeParameters(tunnel, tunnelDto, inNodeValidation.getNode().getServerIp());
+        R outNodeSetupResult = setupOutNodeParameters(tunnel, tunnelDto, StrUtil.trim(inNodeValidation.getNode().getServerIp()));
         if (outNodeSetupResult.getCode() != 0) {
             return outNodeSetupResult;
         }
@@ -473,7 +473,7 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         }
         // 设置出口参数
         tunnel.setOutNodeId(tunnelDto.getOutNodeId());
-        tunnel.setOutIp(outNode.getServerIp());
+        tunnel.setOutIp(StrUtil.trim(outNode.getServerIp()));
         
         return R.ok();
     }
@@ -682,7 +682,7 @@ public class TunnelServiceImpl extends ServiceImpl<TunnelMapper, Tunnel> impleme
         } else {
             // 隧道转发：入口TCP ping出口，出口TCP ping谷歌443端口
             int outNodePort = getOutNodeTcpPort(tunnel.getId());
-            DiagnosisResult inToOutResult = performTcpPingDiagnosisWithConnectionCheck(inNode, outNode.getServerIp(), outNodePort, "入口->出口");
+            DiagnosisResult inToOutResult = performTcpPingDiagnosisWithConnectionCheck(inNode, StrUtil.trim(outNode.getServerIp()), outNodePort, "入口->出口");
             results.add(inToOutResult);
 
             // 先检查出口节点的真实连接状态，然后再进行诊断
