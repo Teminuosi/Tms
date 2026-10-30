@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 
 import { Logo } from '@/components/icons';
 import { siteConfig } from '@/config/site';
+import ClientRecommendBanner from '@/components/client-recommend-banner';
 
 interface TabItem {
   path: string;
@@ -138,6 +139,7 @@ export default function H5Layout({
 
       {/* 主内容区域 */}
       <main className="flex-1 bg-gray-100 dark:bg-black">
+        <ClientRecommendBanner />
         {children}
       </main>
 

@@ -12,6 +12,7 @@ import { updatePassword, getVersionInfo } from '@/api';
 import { safeLogout } from '@/utils/logout';
 import { siteConfig, SITE_CONFIG_UPDATED, CLIENT_DOWNLOAD_URL } from '@/config/site';
 import SkinPicker from '@/components/skin-picker';
+import ClientRecommendBanner from '@/components/client-recommend-banner';
 
 interface MenuItem {
   path: string;
@@ -524,6 +525,7 @@ export default function AdminLayout({
 
         {/* 主内容 */}
         <main className={`flex-1 bg-transparent ${isMobile ? '' : 'overflow-y-auto'}`}>
+          <ClientRecommendBanner />
           {children}
         </main>
       </div>

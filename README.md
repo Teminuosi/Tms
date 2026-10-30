@@ -2,6 +2,8 @@
 
 > 一个面板同时搞定**翻墙协议**、**转发中转**、以及**每用户限速 / 流量 / 到期**。
 
+> 💡 **推荐使用 TMS 客户端管理面板**:常用功能都在客户端里,更省事。[下载 TMS 客户端](https://3yuedaohang.com/proxy-download)
+
 <p>
   <a href="https://3yuedaohang.com">站长博客</a> ·
   <a href="https://www.youtube.com/@zhanzhang3yue">YouTube</a> ·
