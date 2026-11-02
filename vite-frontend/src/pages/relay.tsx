@@ -25,6 +25,7 @@ import {
 import { copyTextToClipboard } from "@/utils/clipboard";
 import { SNI_PRESETS, DEFAULT_SNI, cleanSni } from "@/config/sni";
 import { SubQr } from "@/components/sub-qr";
+import { getSubBase } from "@/utils/sub-base";
 
 /**
  * 中转(前置机协议 + 落地出口)· 机器卡模式。
@@ -62,7 +63,8 @@ export default function RelayPage() {
     try {
       const res = await assignSelf({ nodeId, relay: true, landingId });
       if (res.code === 0 && res.data?.subToken) {
-        setSelfSubUrl(`${window.location.origin}/api/v1/open_api/sub?token=${res.data.subToken}`);
+        // 设了「订阅地址(给车友的)」就用它开头,没设 = 网页地址(和以前一样)
+        setSelfSubUrl(`${await getSubBase()}/api/v1/open_api/sub?token=${res.data.subToken}`);
         setSelfOpen(true);
         loadAll();
       } else {

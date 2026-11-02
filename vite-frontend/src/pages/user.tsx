@@ -54,6 +54,7 @@ import {
 } from '@/api';
 import { copyTextToClipboard } from '@/utils/clipboard';
 import { SubQrToggle } from '@/components/sub-qr';
+import { getSubBase } from '@/utils/sub-base';
 import { SearchIcon, EditIcon, DeleteIcon, UserIcon, SettingsIcon } from '@/components/icons';
 import { parseDate } from "@internationalized/date";
 
@@ -180,14 +181,17 @@ export default function UserPage() {
   const [subLines, setSubLines] = useState<any[]>([]);
   const [subAllToken, setSubAllToken] = useState<string>('');
   const [subUserName, setSubUserName] = useState<string>('');
-  const subUrl = (token: string) => `${window.location.origin}/api/v1/open_api/sub?token=${token}`;
+  // 订阅链接开头:设了「订阅地址(给车友的)」就用它,没设 = 网页地址(和以前一样)。打开弹窗前先取好
+  const [subBase, setSubBase] = useState<string>(window.location.origin);
+  const subUrl = (token: string) => `${subBase}/api/v1/open_api/sub?token=${token}`;
   // Clash / Mihomo 走独立路径:那边吃 YAML,和上面这条 base64 链接列表不通用,
   // 贴错了客户端里是空的。
-  const clashUrl = (token: string) => `${window.location.origin}/api/v1/open_api/clash?token=${token}`;
+  const clashUrl = (token: string) => `${subBase}/api/v1/open_api/clash?token=${token}`;
 
   const handleShowSub = async (user: User) => {
     try {
-      const res = await getUserLines(user.id);
+      const [res, sb] = await Promise.all([getUserLines(user.id), getSubBase()]);
+      setSubBase(sb);
       // 后端返回结构从数组改成了 {lines, allSubToken},两种都认(版本不同步也不炸)
       const d: any = res.code === 0 ? res.data : null;
       const lines = Array.isArray(d) ? d : (d?.lines || []);

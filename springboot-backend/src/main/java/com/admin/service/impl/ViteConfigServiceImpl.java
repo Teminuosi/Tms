@@ -4,6 +4,7 @@ import com.admin.entity.ViteConfig;
 import com.admin.mapper.ViteConfigMapper;
 import com.admin.service.ViteConfigService;
 import com.admin.common.lang.R;
+import com.admin.common.utils.SubUrlRule;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
@@ -89,15 +90,31 @@ public class ViteConfigServiceImpl extends ServiceImpl<ViteConfigMapper, ViteCon
             return R.err("配置数据不能为空");
         }
 
+        // 订阅地址先校验,不合法整批不写(网页「网站配置」是整表一起提交的,别写一半)。
+        // 这里允许空 = 清掉(回到用面板地址);其它键一律照旧
+        String subUrl = null;
+        if (configMap.containsKey(SubUrlRule.KEY)) {
+            subUrl = SubUrlRule.normalize(configMap.get(SubUrlRule.KEY));
+            if (!subUrl.isEmpty()) {
+                String why = SubUrlRule.check(subUrl);
+                if (why != null) {
+                    return R.err(why);
+                }
+            }
+        }
+
         try {
             for (Map.Entry<String, String> entry : configMap.entrySet()) {
                 String name = entry.getKey();
                 String value = entry.getValue();
-                
+
                 if (!StringUtils.hasText(name)) {
                     continue; // 跳过无效的配置名
                 }
-                
+                if (SubUrlRule.KEY.equals(name)) {
+                    value = subUrl;
+                }
+
                 updateOrCreateConfig(name, value);
             }
             return R.ok(SUCCESS_UPDATE_MSG);
@@ -121,6 +138,13 @@ public class ViteConfigServiceImpl extends ServiceImpl<ViteConfigMapper, ViteCon
         }
         if (!StringUtils.hasText(value)) {
             return R.err(ERROR_CONFIG_VALUE_REQUIRED);
+        }
+        if (SubUrlRule.KEY.equals(name)) {
+            value = SubUrlRule.normalize(value);
+            String why = SubUrlRule.check(value);
+            if (why != null) {
+                return R.err(why);
+            }
         }
 
         try {

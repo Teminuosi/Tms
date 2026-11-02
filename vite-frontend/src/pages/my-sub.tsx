@@ -9,6 +9,7 @@ import { isAdmin } from "@/utils/auth";
 import { JwtUtil } from "@/utils/jwt";
 import { copyTextToClipboard } from "@/utils/clipboard";
 import { SubQrToggle } from "@/components/sub-qr";
+import { getSubBase } from "@/utils/sub-base";
 
 /**
  * 我的订阅(车友视角)· 一条订阅 = 一个套餐。
@@ -22,14 +23,18 @@ export default function MySubPage() {
   const [account, setAccount] = useState<any>(null); // 只用来判断账号是否被停用/到期
   const [loading, setLoading] = useState(true);
 
-  const subUrl = (token: string) => `${window.location.origin}/api/v1/open_api/sub?token=${token}`;
+  // 订阅链接开头:管理员设了「订阅地址(给车友的)」就用它,没设 = 网页地址(和以前一样)。
+  // 和线路一起在 load() 里取,线路出来时地址已经是对的
+  const [subBase, setSubBase] = useState<string>(window.location.origin);
+  const subUrl = (token: string) => `${subBase}/api/v1/open_api/sub?token=${token}`;
   // Clash / Mihomo 是另一套格式(YAML),和上面那条 base64 链接列表不通用。
   // 用 Clash Verge、ClashMeta 的人贴上面那条会得到一个空订阅。
-  const clashUrl = (token: string) => `${window.location.origin}/api/v1/open_api/clash?token=${token}`;
+  const clashUrl = (token: string) => `${subBase}/api/v1/open_api/clash?token=${token}`;
 
   const load = async () => {
     try {
-      const [ln, pkg] = await Promise.all([getMyLines(), getUserPackageInfo()]);
+      const [ln, pkg, sb] = await Promise.all([getMyLines(), getUserPackageInfo(), getSubBase()]);
+      setSubBase(sb);
       if (ln.code === 0) {
         // 后端返回结构从数组改成了 {lines, allSubToken},这里两种都认,
         // 万一前后端镜像版本不同步也不会白屏

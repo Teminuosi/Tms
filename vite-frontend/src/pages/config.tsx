@@ -52,6 +52,18 @@ const CONFIG_ITEMS: ConfigItem[] = [
     type: 'input'
   },
   {
+    key: 'sub_url',
+    label: '订阅地址(给车友的)',
+    placeholder: '不填 = 用面板网页地址;例如 https://sub.example.com',
+    description: '填了之后,发给车友的订阅链接(复制、二维码)都用这个地址开头,车友拿到的订阅地址里看不到面板 IP。'
+      + '一般用一个开了橙云(代理)的 Cloudflare 子域名,把订阅那两个路径转到面板后端端口(TMS 客户端「面板」页有分步说明,还能先实测再保存;在这里保存不做实测,填好后请先自己用订阅链接导入试一下)。'
+      + '注意:面板机自己也当转发机 / 入口时,订阅内容里的节点地址就是面板 IP,藏不住;给车友开网页账号,网页地址就是面板地址;'
+      + '同一个 IP 上别再挂灰色云朵(仅 DNS)的记录,例如面板自己的域名,否则等于告诉别人源 IP;'
+      + 'Cloudflare 在国内一般能用、可能慢、偶尔不通;Cloudflare 到面板这一段是 http 明文(和现在一样)。'
+      + '只填 http(s)://主机名[:端口][/路径前缀],不能带 ? 或 #。清空 = 回到用面板地址。',
+    type: 'input'
+  },
+  {
     key: 'app_name',
     label: '应用名称',
     placeholder: '请输入应用名称',
@@ -105,7 +117,7 @@ const CONFIG_ITEMS: ConfigItem[] = [
 const getInitialConfigs = (): Record<string, string> => {
   if (typeof window === 'undefined') return {};
   
-  const configKeys = ['app_name', 'captcha_enabled', 'captcha_type', 'ip'];
+  const configKeys = ['app_name', 'captcha_enabled', 'captcha_type', 'ip', 'sub_url'];
   const initialConfigs: Record<string, string> = {};
   
   try {
@@ -217,7 +229,13 @@ export default function ConfigPage() {
           key => configs[key] !== originalConfigs[key]
         );
         
-        setOriginalConfigs({ ...configs });
+        // 订阅地址后端存的是规范化后的值(去首尾空白、去末尾 /,和 SubUrlRule.normalize 一致),输入框跟着显示存进去的样子
+        const saved = { ...configs };
+        if (typeof saved.sub_url === 'string') {
+          saved.sub_url = saved.sub_url.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '').replace(/\/+$/, '');
+          setConfigs(saved);
+        }
+        setOriginalConfigs(saved);
         setHasChanges(false);
         
         // 如果应用名称发生变化，立即更新网站配置
