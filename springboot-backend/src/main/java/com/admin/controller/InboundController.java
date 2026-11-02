@@ -152,7 +152,7 @@ public class InboundController extends BaseController {
         if (uid == null) {
             return R.err("未登录");
         }
-        return inboundService.getUserLines(uid.longValue());
+        return inboundService.getUserLines(uid.longValue(), true);
     }
 
     @LogAnnotation
@@ -211,6 +211,44 @@ public class InboundController extends BaseController {
     public R rename(@RequestBody Map<String, Object> body) {
         return inboundService.renameInbound(asLong(body.get("id")),
                 body.get("remark") == null ? "" : String.valueOf(body.get("remark")));
+    }
+
+    /** 某车友的节点名(线路别名 / 协议名 / 转发名,只进他自己的订阅)+ 订阅里实际显示成什么 */
+    @RequireRole
+    @PostMapping("/user-names")
+    public R userNames(@RequestBody Map<String, Object> body) {
+        Long userId;
+        try {
+            userId = asLong(body.get("userId"));
+        } catch (NumberFormatException e) {
+            return R.err("车友编号不对");
+        }
+        return inboundService.getUserNodeNames(userId);
+    }
+
+    /** 批量保存某车友的节点名:items[{scope, nodeId, landingId | inboundId | forwardId, name}],name 空 = 清掉 */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/user-names-save")
+    @SuppressWarnings("unchecked")
+    public R userNamesSave(@RequestBody Map<String, Object> body) {
+        Object items = body.get("items");
+        if (!(items instanceof java.util.List)) {
+            return R.err("参数不全");
+        }
+        java.util.List<Map<String, Object>> list = new java.util.ArrayList<>();
+        for (Object o : (java.util.List<Object>) items) {
+            if (o instanceof Map) {
+                list.add((Map<String, Object>) o);
+            }
+        }
+        Long userId;
+        try {
+            userId = asLong(body.get("userId"));
+        } catch (NumberFormatException e) {
+            return R.err("车友编号不对");
+        }
+        return inboundService.saveUserNodeNames(userId, list);
     }
 
     /** null / 空串都当没传。直连线路的 landingId 本来就是空的,不能当成参数错误。 */

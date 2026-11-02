@@ -101,6 +101,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     @Resource
     private UserTunnelMapper userTunnelMapper;
 
+    /** 删车友时清掉他的节点名(吞异常,不影响删除) */
+    @Resource
+    private com.admin.common.task.UserNodeNameStore nodeNameStore;
+
     @Resource
     @Lazy
     private com.admin.mapper.InboundUserMapper inboundUserMapper;
@@ -550,6 +554,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         } catch (Exception e) {
             System.err.println("删除用户的协议分配/线路记录失败，用户ID: " + userId + ", 错误: " + e.getMessage());
         }
+
+        // 4. 车友节点名(线路别名 / 协议名 / 转发名)
+        nodeNameStore.deleteUser(userId);
     }
 
     /**

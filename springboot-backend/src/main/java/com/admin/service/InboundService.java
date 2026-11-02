@@ -67,4 +67,13 @@ public interface InboundService extends IService<Inbound> {
 
     /** 取某车友的所有订阅线路(车友×机器):每台机器一条订阅[nodeId,nodeName,type直连/中转,landingName,协议数,subToken] */
     R getUserLines(Long userId);
+
+    /** self=true:车友自己看(/my-lines),设了线路别名的显示别名、不露机器名 */
+    R getUserLines(Long userId, boolean self);
+
+    /** 车友节点名弹窗:线路别名 / 协议名 / 转发名 + 订阅里实际显示成什么 */
+    R getUserNodeNames(Long userId);
+
+    /** 批量保存车友节点名(name 空 = 清掉) */
+    R saveUserNodeNames(Long userId, java.util.List<java.util.Map<String, Object>> items);
 }

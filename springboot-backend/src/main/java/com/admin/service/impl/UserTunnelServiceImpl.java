@@ -76,6 +76,10 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
     @Autowired
     private NodeService nodeService;
 
+    /** 删转发时顺手清掉车友给它起的名字(吞异常,不影响删除) */
+    @Autowired
+    private com.admin.common.task.UserNodeNameStore nodeNameStore;
+
     // ========== 公共接口实现 ==========
 
     /**
@@ -279,6 +283,7 @@ public class UserTunnelServiceImpl extends ServiceImpl<UserTunnelMapper, UserTun
 
                     // 然后删除数据库记录
                     forwardService.removeById(forward.getId());
+                    nodeNameStore.deleteForward(forward.getId());
 
                 } catch (Exception e) {
                     // 单个转发删除失败，记录错误但继续处理其他转发

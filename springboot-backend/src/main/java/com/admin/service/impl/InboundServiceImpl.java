@@ -8,6 +8,7 @@ import com.admin.common.dto.TunnelDto;
 import com.admin.common.lang.R;
 import com.admin.common.utils.ClashUtil;
 import com.admin.common.utils.SingboxUtil;
+import com.admin.common.utils.SubNames;
 import com.admin.entity.Forward;
 import com.admin.entity.Inbound;
 import com.admin.entity.InboundLine;
@@ -75,6 +76,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     private com.admin.mapper.InboundLineMapper inboundLineMapper;
     @Autowired
     private com.admin.service.LandingService landingService;
+    /** 车友节点名(只进该车友订阅);表没建成时 load 返回空,订阅照旧 */
+    @Autowired
+    private com.admin.common.task.UserNodeNameStore nodeNameStore;
 
     /**
      * 把某台机器的 sing-box 配置重推一遍。
@@ -419,6 +423,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             return R.err("有 " + failed.size() + " 条转发没删掉,协议先保留,请稍后重试:" + String.join(";", failed));
         }
         this.removeById(id);
+        nodeNameStore.deleteInbound(id); // 吞异常,不影响删除
         pushNodeSingbox(in.getNodeId());
         return R.ok();
     }
@@ -746,6 +751,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         java.util.Map<String, Boolean> lineStopped = new HashMap<>();
         java.util.Map<Long, Node> nodeCache = new HashMap<>();
         java.util.Map<Long, String> landingNames = new HashMap<>();
+        SubNames.UserNames names = nodeNameStore.load(u.getId());
 
         for (InboundUser iu : ius) {
             if (iu.getStatus() != null && iu.getStatus() == 0) {
@@ -779,20 +785,12 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 continue;
             }
             // 不加方括号:名字最终要显示在手机客户端一行里,中转的还要再带一个
-            // 「→落地名」,方括号纯占位置。空格分隔已经够读了。
-            StringBuilder prefix = new StringBuilder(node.getName());
-            if (lid != null) {
-                String ln = landingNames.get(lid);
-                if (ln == null) {
-                    com.admin.entity.Landing l = landingMapper.selectById(lid);
-                    ln = (l != null && l.getName() != null) ? l.getName() : ("落地#" + lid);
-                    landingNames.put(lid, ln);
-                }
-                prefix.append("→").append(ln);
-            }
-            prefix.append(" ");
+            // 「→落地名」,方括号纯占位置。空格分隔已经够读了。(前缀规则在 SubNames.resolve)
+            String ln = lid == null ? null : landingNameCached(lid, landingNames);
+            SubNames.Name nm = SubNames.resolve(in.getProtocol(), in.getRemark(), node.getName(), ln,
+                    lid != null, true, names.line(in.getNodeId(), lid), names.inbound(in.getId()));
 
-            String link = buildClientLink(in, iu, node, forward, prefix.toString());
+            String link = buildClientLink(in, iu, node, forward, nm);
             if (link != null && !link.isEmpty()) {
                 links.add(link);
             }
@@ -815,7 +813,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 }
                 String cl = fwd.getClientLink();
                 if (cl != null && !cl.trim().isEmpty()) {
-                    links.add(cl.trim());
+                    // 车友给这条转发起了名就在这里套上(客户端每次展开都会重推 client_link,
+                    // 存进库的话会被冲掉);没起名原样输出,逐字节不变
+                    String fname = names.forward(fwd.getId());
+                    links.add(fname == null ? cl.trim() : SubNames.applyForwardName(cl.trim(), fname));
                 }
             }
         } catch (Exception e) {
@@ -852,6 +853,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         java.util.Map<String, Boolean> lineStopped = new HashMap<>();
         java.util.Map<Long, Node> nodeCache = new HashMap<>();
         java.util.Map<Long, String> landingNames = new HashMap<>();
+        java.util.Map<Long, SubNames.UserNames> namesByUser = new HashMap<>();
 
         for (InboundUser iu : ius) {
             if (iu.getStatus() != null && iu.getStatus() == 0) {
@@ -885,26 +887,12 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 continue;
             }
 
-            // 名字规则和链接订阅保持一致:聚合订阅带线路前缀,单条不带。
+            // 名字规则和链接订阅是同一个函数(SubNames.resolve):聚合订阅带线路前缀,单条不带;
             // 两种订阅里同一个节点应该叫同一个名字,不然车友对不上。
-            boolean customName = in.getRemark() != null && !in.getRemark().isEmpty();
-            String remark = customName ? in.getRemark() : protocolDisplayName(in.getProtocol());
-            // 和链接订阅同一套规则:改过名就不加前缀(见 buildClientLink 的说明)。
-            // 这两处必须一起改 —— 上面的注释本来就写着"两种订阅里同一个节点应该叫同一个名字"。
-            if (aggUser != null && !customName) {
-                StringBuilder prefix = new StringBuilder(node.getName());
-                if (lid != null) {
-                    String ln = landingNames.get(lid);
-                    if (ln == null) {
-                        com.admin.entity.Landing l = landingMapper.selectById(lid);
-                        ln = (l != null && l.getName() != null) ? l.getName() : ("落地#" + lid);
-                        landingNames.put(lid, ln);
-                    }
-                    prefix.append("→").append(ln);
-                }
-                prefix.append(" ");
-                remark = prefix + remark;
-            }
+            SubNames.UserNames names = namesByUser.computeIfAbsent(iu.getUserId(), nodeNameStore::load);
+            String ln = (aggUser != null && lid != null) ? landingNameCached(lid, landingNames) : null;
+            String remark = SubNames.resolve(in.getProtocol(), in.getRemark(), node.getName(), ln,
+                    lid != null, aggUser != null, names.line(in.getNodeId(), lid), names.inbound(in.getId())).text;
 
             String ip = (node.getDomain() != null && !node.getDomain().trim().isEmpty())
                     ? node.getDomain().trim()
@@ -961,40 +949,37 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     /** 按协议为某个入站用户拼客户端链接(assignUser 与订阅共用) */
     private String buildClientLink(Inbound in, InboundUser iu, Node node, Forward forward) {
-        return buildClientLink(in, iu, node, forward, "");
+        // 分配接口回给管理员的那条链接:不带车友名字,和以前一样
+        return buildClientLink(in, iu, node, forward, SubNames.resolve(in.getProtocol(), in.getRemark(),
+                null, null, in.getLandingId() != null, false, null, null));
+    }
+
+    /** 落地名(聚合订阅前缀 / 节点名弹窗用);落地记录没了显示「落地#id」,和以前一致 */
+    private String landingNameCached(Long lid, java.util.Map<Long, String> cache) {
+        String ln = cache.get(lid);
+        if (ln == null) {
+            com.admin.entity.Landing l = landingMapper.selectById(lid);
+            ln = (l != null && l.getName() != null) ? l.getName() : ("落地#" + lid);
+            cache.put(lid, ln);
+        }
+        return ln;
     }
 
     /**
-     * 协议在客户端里显示的名字。
-     * 没填备注时拿它当节点名 —— 原来兜底用的是 tag(in-1-40001 这种),
-     * 占了十个字符还看不出是什么协议,单条线路订阅里六个节点全长一个样。
+     * nm:SubNames.resolve 算好的名字(三处订阅共用一个函数)。
+     * 【改过名就完全听用户的】前缀本来是帮忙区分用的,但用户一旦主动改过名(全局 remark),
+     * 再往前面塞"面板机→澳大利亚 "就是帮倒忙 —— 这条规则也在 resolve 里。
+     * 用到车友自己设置的名字时,# 后面改用 %20 编码空格(老名字逐字节不变,见 SubNames.encodeFragment)。
      */
-    private static String protocolDisplayName(String protocol) {
-        if (protocol == null) {
-            return "VLESS";
+    private String buildClientLink(Inbound in, InboundUser iu, Node node, Forward forward, SubNames.Name nm) {
+        String link = buildClientLinkRaw(in, iu, node, forward, nm.text);
+        if (nm.userSet && link != null && !"vmess".equals(in.getProtocol())) {
+            link = SubNames.withFragment(link, nm.text);
         }
-        switch (protocol) {
-            case "shadowsocks": return "Shadowsocks";
-            case "vmess":       return "VMess";
-            case "trojan":      return "Trojan";
-            case "hysteria2":   return "Hysteria2";
-            case "tuic":        return "TUIC";
-            case "anytls":      return "AnyTLS";
-            default:            return "VLESS";
-        }
+        return link;
     }
 
-    /** namePrefix:聚合订阅里用来标注这个节点属于哪条线路,单条线路订阅传空串 */
-    private String buildClientLink(Inbound in, InboundUser iu, Node node, Forward forward, String namePrefix) {
-        boolean customName = in.getRemark() != null && !in.getRemark().isEmpty();
-        String remark = customName ? in.getRemark() : protocolDisplayName(in.getProtocol());
-        // 【改过名就完全听用户的】前缀本来是帮忙区分用的:车友订阅里十几条全叫 VLESS/Trojan,
-        // 不标节点名根本分不清哪条是哪台机器。但用户一旦主动改过名,说明他要自己控制显示,
-        // 这时候再往前面塞"面板机→澳大利亚 "就是帮倒忙了。
-        // 所以只在没改过名(remark 为空、用协议名兜底)时才加前缀。
-        if (!customName && namePrefix != null && !namePrefix.isEmpty()) {
-            remark = namePrefix + remark;
-        }
+    private String buildClientLinkRaw(Inbound in, InboundUser iu, Node node, Forward forward, String remark) {
         String uuid = iu.getUuid();
         String password = iu.getPassword();
         // 转发机配了域名就用域名 —— 车友在客户端里看到的是 hk.example.com 而不是车主的 IP
@@ -1046,6 +1031,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         // 线路停用状态查一次缓存起来:一条订阅里六个协议同属一条线路,
         // 挨个去查线路表纯属浪费。
         java.util.Map<String, Boolean> lineStopped = new HashMap<>();
+        java.util.Map<Long, SubNames.UserNames> namesByUser = new HashMap<>();
         for (InboundUser iu : ius) {
             if (iu.getStatus() != null && iu.getStatus() == 0) {
                 continue;
@@ -1073,7 +1059,10 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             if (node == null || forward == null) {
                 continue;
             }
-            String link = buildClientLink(in, iu, node, forward);
+            // 单条线路订阅不带「机器→落地」前缀;车友名字(线路别名 / 协议名)照样生效(三月拍板 1)
+            SubNames.UserNames names = namesByUser.computeIfAbsent(iu.getUserId(), nodeNameStore::load);
+            String link = buildClientLink(in, iu, node, forward, SubNames.resolve(in.getProtocol(), in.getRemark(),
+                    node.getName(), null, lid != null, false, names.line(in.getNodeId(), lid), names.inbound(in.getId())));
             if (link != null && !link.isEmpty()) {
                 links.add(link);
             }
@@ -1095,6 +1084,16 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     @Override
     public R getUserLines(Long userId) {
+        return getUserLines(userId, false);
+    }
+
+    /**
+     * self=true:车友自己看(/my-lines)。设了线路别名的线路,机器名换成别名、落地名清空 ——
+     * 车友看到的和他订阅里一致,也看不到车主的机器名(三月拍板 3)。
+     * self=false:管理员看,保留真名,另带 alias 字段。
+     */
+    @Override
+    public R getUserLines(Long userId, boolean self) {
         com.alibaba.fastjson.JSONArray lines = new com.alibaba.fastjson.JSONArray();
         if (userId == null) {
             JSONObject empty = new JSONObject();
@@ -1118,6 +1117,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             byLine.computeIfAbsent(key, k -> new java.util.ArrayList<>()).add(iu);
             lineKey.putIfAbsent(key, new long[]{in.getNodeId(), lid});
         }
+        SubNames.UserNames names = byLine.isEmpty() ? SubNames.UserNames.EMPTY : nodeNameStore.load(userId);
         for (java.util.Map.Entry<String, java.util.List<InboundUser>> e : byLine.entrySet()) {
             long[] k = lineKey.get(e.getKey());
             Long nodeId = k[0];
@@ -1157,6 +1157,15 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             line.put("landingId", landingId);
             line.put("type", landingId != null ? "relay" : "direct");
             line.put("landingName", landingName);
+            String alias = names.line(nodeId, landingId);
+            if (alias != null) {
+                if (self) {
+                    line.put("nodeName", alias);
+                    line.put("landingName", null);
+                } else {
+                    line.put("alias", alias);
+                }
+            }
             line.put("flow", lineFlow); // 该线路已用流量(字节)
             // 该线路自己的配额/到期(线路表);quotaGb=0/null 表示不单独限,只受账号总量约束
             InboundLine lineRec = getLine(userId, nodeId, landingId);
@@ -1295,8 +1304,18 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
         }
         inboundUserMapper.deleteById(inboundUserId);
+        nodeNameStore.deleteUserInbound(iu.getUserId(), iu.getInboundId());
         Inbound in = this.getById(iu.getInboundId());
         if (in != null) {
+            // 这是他在这条线路上的最后一个协议 → 线路没了,别名也清掉(和删线路、重启清理一个口径,
+            // 不然以后再分配这条线路,旧别名会冒出来)
+            try {
+                if (lineInboundUsers(iu.getUserId(), in.getNodeId(), in.getLandingId()).isEmpty()) {
+                    nodeNameStore.deleteUserLine(iu.getUserId(), SubNames.lineKey(in.getNodeId(), in.getLandingId()));
+                }
+            } catch (Exception e) {
+                log.warn("取消分配后清线路别名失败(不影响取消): " + e.getMessage());
+            }
             pushNodeSingbox(in.getNodeId());
         }
         return R.ok();
@@ -1521,6 +1540,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         if (line != null) {
             inboundLineMapper.deleteById(line.getId());
         }
+        // 这条线路的别名和其下协议的车友名一起清(吞异常,不影响删除)
+        nodeNameStore.deleteUserLine(userId, SubNames.lineKey(nodeId, landingId));
+        for (InboundUser iu : ius) {
+            nodeNameStore.deleteUserInbound(userId, iu.getInboundId());
+        }
         pushNodeSingbox(nodeId);
         return R.ok();
     }
@@ -1538,6 +1562,189 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         in.setRemark(remark == null ? "" : remark.trim());
         this.updateById(in);
         return R.ok();
+    }
+
+    private static final String NAME_TABLE_MISSING = "车友节点名表暂时不可用(多半是数据库还没起来),面板会自己重试 —— 半分钟后再试,一直不行再重启面板";
+
+    /**
+     * 车友节点名弹窗的数据:这个车友的每条线路(别名 + 每个协议的名字)、每条转发的名字,
+     * 以及「单条订阅 / 聚合订阅里实际显示成什么」(effLine / effAll)—— 用和订阅同一个函数算,
+     * 客户端照着显示,不用自己再实现一遍规则。
+     */
+    @Override
+    public R getUserNodeNames(Long userId) {
+        if (userId == null) {
+            return R.err("参数不全");
+        }
+        User u = userMapper.selectById(userId);
+        if (u == null) {
+            return R.err("用户不存在");
+        }
+        SubNames.UserNames names = nodeNameStore.load(userId);
+        java.util.Map<String, JSONObject> lineMap = new java.util.LinkedHashMap<>();
+        java.util.Map<Long, Node> nodeCache = new HashMap<>();
+        java.util.Map<Long, String> landingNames = new HashMap<>();
+        for (InboundUser iu : inboundUserMapper.selectList(new QueryWrapper<InboundUser>().eq("user_id", userId))) {
+            if (iu.getStatus() != null && iu.getStatus() == 0) {
+                continue;
+            }
+            Inbound in = this.getById(iu.getInboundId());
+            if (in == null) {
+                continue;
+            }
+            Long lid = in.getLandingId();
+            String key = SubNames.lineKey(in.getNodeId(), lid);
+            Node node = nodeCache.computeIfAbsent(in.getNodeId(), nodeMapper::selectById);
+            String nodeName = node != null ? node.getName() : ("机器#" + in.getNodeId());
+            String ln = lid == null ? null : landingNameCached(lid, landingNames);
+            String alias = names.line(in.getNodeId(), lid);
+            JSONObject line = lineMap.get(key);
+            if (line == null) {
+                line = new JSONObject(true);
+                line.put("nodeId", in.getNodeId());
+                line.put("landingId", lid);
+                line.put("nodeName", nodeName);
+                line.put("landingName", ln);
+                line.put("alias", alias == null ? "" : alias);
+                line.put("inbounds", new com.alibaba.fastjson.JSONArray());
+                lineMap.put(key, line);
+            }
+            String own = names.inbound(in.getId());
+            JSONObject ib = new JSONObject(true);
+            ib.put("inboundId", in.getId());
+            ib.put("protocol", in.getProtocol());
+            ib.put("remark", in.getRemark() == null ? "" : in.getRemark());
+            ib.put("name", own == null ? "" : own);
+            ib.put("effLine", SubNames.resolve(in.getProtocol(), in.getRemark(), nodeName, ln, lid != null, false, alias, own).text);
+            ib.put("effAll", SubNames.resolve(in.getProtocol(), in.getRemark(), nodeName, ln, lid != null, true, alias, own).text);
+            line.getJSONArray("inbounds").add(ib);
+        }
+        com.alibaba.fastjson.JSONArray fwds = new com.alibaba.fastjson.JSONArray();
+        try {
+            for (Forward f : forwardMapper.selectList(new QueryWrapper<Forward>().eq("user_id", userId.intValue()))) {
+                // 协议线路自己的前置转发(inbound-{入站}-user-{车友})不单独进订阅,名字跟着协议走,不列
+                if (f.getName() != null && f.getName().matches("^inbound-\\d+-user-\\d+$")) {
+                    continue;
+                }
+                String own = names.forward(f.getId());
+                String def = SubNames.forwardLinkName(f.getClientLink());
+                JSONObject fj = new JSONObject(true);
+                fj.put("forwardId", f.getId());
+                fj.put("forwardName", f.getName());
+                fj.put("inPort", f.getInPort());
+                fj.put("hasLink", f.getClientLink() != null && !f.getClientLink().trim().isEmpty());
+                fj.put("name", own == null ? "" : own);
+                fj.put("defaultName", def);
+                fj.put("effName", own != null ? own : def);
+                fwds.add(fj);
+            }
+        } catch (Exception e) {
+            log.warn("节点名弹窗取转发失败(client_link 列可能没建成): " + e.getMessage());
+        }
+        JSONObject res = new JSONObject(true);
+        res.put("available", nodeNameStore.isAvailable());
+        res.put("lines", new com.alibaba.fastjson.JSONArray(new java.util.ArrayList<>(lineMap.values())));
+        res.put("forwards", fwds);
+        return R.ok(res);
+    }
+
+    /**
+     * 批量保存车友节点名。items[{scope:line|inbound|forward, nodeId, landingId, inboundId, forwardId, name}],
+     * name 为空 = 清掉。先全部校验(归属 + 名字),有一条不对就一条都不写。
+     */
+    @Override
+    public R saveUserNodeNames(Long userId, List<java.util.Map<String, Object>> items) {
+        if (userId == null || items == null) {
+            return R.err("参数不全");
+        }
+        if (!nodeNameStore.isAvailable()) {
+            return R.err(NAME_TABLE_MISSING);
+        }
+        if (userMapper.selectById(userId) == null) {
+            return R.err("用户不存在");
+        }
+        if (items.size() > 500) {
+            return R.err("一次改得太多了");
+        }
+        List<String[]> writes = new java.util.ArrayList<>(); // [scope, refKey, name]
+        for (java.util.Map<String, Object> it : items) {
+            if (it == null) {
+                continue;
+            }
+            String scope = it.get("scope") == null ? "" : String.valueOf(it.get("scope"));
+            Object rawName = it.get("name");
+            if (rawName != null && !(rawName instanceof String)) {
+                return R.err("名字要填文字");
+            }
+            String[] nv = SubNames.normalize((String) rawName);
+            if (nv[1] != null) {
+                return R.err(nv[1] + ":" + nv[0]);
+            }
+            String refKey;
+            try {
+                switch (scope) {
+                    case com.admin.common.task.UserNodeNameStore.SCOPE_LINE: {
+                        Long nodeId = optLong(it.get("nodeId"));
+                        Long landingId = optLong(it.get("landingId"));
+                        if (landingId != null && landingId == 0L) {
+                            landingId = null;
+                        }
+                        if (nodeId == null || lineInboundUsers(userId, nodeId, landingId).isEmpty()) {
+                            return R.err("这个车友没有这条线路(机器 " + nodeId + ")");
+                        }
+                        refKey = SubNames.lineKey(nodeId, landingId);
+                        break;
+                    }
+                    case com.admin.common.task.UserNodeNameStore.SCOPE_INBOUND: {
+                        Long inboundId = optLong(it.get("inboundId"));
+                        if (inboundId == null || inboundUserMapper.selectCount(new QueryWrapper<InboundUser>()
+                                .eq("user_id", userId).eq("inbound_id", inboundId)) == 0) {
+                            return R.err("这个车友没有这个协议(" + inboundId + ")");
+                        }
+                        refKey = String.valueOf(inboundId);
+                        break;
+                    }
+                    case com.admin.common.task.UserNodeNameStore.SCOPE_FORWARD: {
+                        Long forwardId = optLong(it.get("forwardId"));
+                        Forward f = forwardId == null ? null : forwardMapper.selectById(forwardId);
+                        if (f == null || f.getUserId() == null || f.getUserId().longValue() != userId) {
+                            return R.err("这条转发不是这个车友的(" + forwardId + ")");
+                        }
+                        refKey = String.valueOf(forwardId);
+                        break;
+                    }
+                    default:
+                        return R.err("不认识的类型:" + scope);
+                }
+            } catch (NumberFormatException e) {
+                return R.err("编号格式不对");
+            }
+            writes.add(new String[]{scope, refKey, nv[0]});
+        }
+        try {
+            // 一个事务写完:中途数据库出错就整批回滚,不会只改了一半
+            nodeNameStore.putAll(userId, writes);
+        } catch (Exception e) {
+            log.warn("保存车友节点名失败(已整批回滚): " + e.getMessage());
+            String m = String.valueOf(e.getMessage());
+            if (m.contains("doesn't exist") || e instanceof IllegalStateException) {
+                return R.err(NAME_TABLE_MISSING);
+            }
+            // 原始 SQL 报错只进日志,不往界面上甩
+            return R.err("保存失败,数据库没写进去(这次一条都没改),请稍后再试");
+        }
+        return getUserNodeNames(userId);
+    }
+
+    private static Long optLong(Object v) {
+        if (v == null) {
+            return null;
+        }
+        String s = String.valueOf(v).trim();
+        if (s.isEmpty() || "null".equals(s)) {
+            return null;
+        }
+        return Long.valueOf(s);
     }
 
     /** 该车友在这条线路(机器 × 落地)下的所有协议分配记录 */

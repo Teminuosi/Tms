@@ -252,8 +252,12 @@ public class ClashUtil {
         return candidate;
     }
 
+    /**
+     * 预先占上分组名和 Mihomo 内置策略名(SubNames.CLASH_RESERVED):节点叫「🚀 节点选择」「DIRECT」时
+     * Mihomo 整份配置加载失败。占上之后撞名的节点变成「DIRECT 2」这种,其余名字不受影响。
+     */
     public static Set<String> newNameSet() {
-        return new HashSet<>();
+        return new HashSet<>(SubNames.CLASH_RESERVED);
     }
 
     /** 给调用方留的空 map,避免各处 new 一遍 */

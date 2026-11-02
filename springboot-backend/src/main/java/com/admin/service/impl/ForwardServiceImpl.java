@@ -65,6 +65,10 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     @Resource
     UserService userService;
 
+    /** 删转发时顺手清掉车友给它起的名字(吞异常,不影响删除) */
+    @Resource
+    private com.admin.common.task.UserNodeNameStore nodeNameStore;
+
     @Resource
     NodeService nodeService;
 
@@ -114,6 +118,8 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
             if (!this.save(forward)) {
                 return R.err("端口转发创建失败");
             }
+            // 新 id 可能是 MySQL 重启后复用的旧编号:清掉旧转发留下的车友名字,免得继承
+            nodeNameStore.deleteForward(forward.getId());
 
             NodeInfo nodeInfo = getRequiredNodes(tunnel);
             if (nodeInfo.isHasError()) {
@@ -183,6 +189,8 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         if (!this.save(forward)) {
             return R.err("端口转发创建失败");
         }
+        // 新 id 可能是 MySQL 重启后复用的旧编号:清掉旧转发留下的车友名字,免得继承
+        nodeNameStore.deleteForward(forward.getId());
 
         // 4. 节点信息
         NodeInfo nodeInfo = getRequiredNodes(tunnel);
@@ -500,6 +508,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         // 7. 删除转发记录
         boolean result = this.removeById(id);
         if (result) {
+            nodeNameStore.deleteForward(id);
             return R.ok("端口转发删除成功");
         } else {
             return R.err("端口转发删除失败");
@@ -537,6 +546,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         // 3. 直接删除转发记录，跳过GOST服务删除
         boolean result = this.removeById(id);
         if (result) {
+            nodeNameStore.deleteForward(id);
             return R.ok("端口转发强制删除成功");
         } else {
             return R.err("端口转发强制删除失败");
