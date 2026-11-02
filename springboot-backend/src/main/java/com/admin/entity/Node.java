@@ -60,6 +60,23 @@ public class Node extends BaseEntity {
     @com.baomidou.mybatisplus.annotation.TableField(exist = false)
     private String singboxInstallErr;
 
+    /** 服务器 IPv6 地址(可选,裸地址不带方括号,小写)。为空时节点上报的第一个公网 v6 会自动填入 */
+    private String serverIpv6;
+
+    /** 订阅里是否给 IPv6 地址出节点(0/1) */
+    private Integer ipv6Sub;
+
+    /** IPv6 双栈(0/1) */
+    private Integer ipv6Dual;
+
+    /** 节点上报的公网 IPv6 地址(不入库) */
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private java.util.List<String> reportedIpv6;
+
+    /** 节点程序是否支持切换监听地址(上报的 caps 含 listen_switch;不入库) */
+    @com.baomidou.mybatisplus.annotation.TableField(exist = false)
+    private Boolean canSwitchListen;
+
     private String version;
 
     private Integer portSta;

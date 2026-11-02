@@ -82,6 +82,8 @@ const SLOW_PATHS = [
   '/inbound/delete-by-node',
   '/landing/test',
   '/node/install',
+  '/node/enable-ipv6',
+  '/node/disable-ipv6',
   '/forward/create',
   '/forward/update',
   '/tunnel/diagnose',

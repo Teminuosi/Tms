@@ -19,6 +19,8 @@ import {
   createNode,
   getNodeList,
   updateNode,
+  enableNodeIpv6,
+  disableNodeIpv6,
   deleteNode,
   getNodeInstallCommand,
   updateConfig,
@@ -31,6 +33,17 @@ interface Node {
   ip: string;
   serverIp: string;
   domain?: string;
+  /** 公网 IPv6(管理员填或节点上报后确认) */
+  serverIpv6?: string;
+  /** 订阅里每个协议多一条 v6 线路:0 关 1 开(只在 ipv6Dual=1 时生效) */
+  ipv6Sub?: number;
+  /** 公网端口是否已改成 IPv4 和 IPv6 都收:0/1 */
+  ipv6Dual?: number;
+  /** 节点上报的公网 IPv6 */
+  reportedIpv6?: string[];
+  /** 节点程序是否支持切换监听(v14+) */
+  canSwitchListen?: boolean;
+  ipv6Loading?: boolean;
   /** 该机 sing-box 是否在运行(节点上报);null/undefined = 还没上报过 */
   singboxRunning?: boolean;
   /** 该机装没装 sing-box。undefined = 老节点没上报这个字段,提示里两种情况都要提 */
@@ -65,6 +78,8 @@ interface NodeForm {
   ipString: string;
   serverIp: string;
   domain: string;
+  serverIpv6: string;
+  ipv6Sub: number; // 0 关 1 开
   portSta: number;
   portEnd: number;
   http: number; // 0 关 1 开
@@ -86,6 +101,9 @@ export default function NodePage() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [nodeToDelete, setNodeToDelete] = useState<Node | null>(null);
+  // 开启 / 关闭 IPv6 的确认框
+  const [ipv6Confirm, setIpv6Confirm] = useState<{ node: Node; enable: boolean } | null>(null);
+  const [ipv6Errors, setIpv6Errors] = useState<{ title: string; items: string[] } | null>(null);
   const [protocolDisabled, setProtocolDisabled] = useState(false);
   const [protocolDisabledReason, setProtocolDisabledReason] = useState('');
   const [form, setForm] = useState<NodeForm>({
@@ -94,6 +112,8 @@ export default function NodePage() {
     ipString: '',
     serverIp: '',
     domain: '',
+    serverIpv6: '',
+    ipv6Sub: 0,
     portSta: 1000,
     portEnd: 65535,
     http: 0,
@@ -436,6 +456,11 @@ export default function NodePage() {
       }
     }
 
+    const v6 = form.serverIpv6.trim();
+    if (v6 && (!v6.includes(':') || !/^[0-9a-fA-F:]+$/.test(v6))) {
+      newErrors.serverIpv6 = '这里只填 IPv6 地址,如 2001:db8::1,不带方括号和端口';
+    }
+
     if (!form.portSta || form.portSta < 1 || form.portSta > 65535) {
       newErrors.portSta = '端口范围必须在1-65535之间';
     }
@@ -470,6 +495,8 @@ export default function NodePage() {
       ipString: node.ip ? node.ip.split(',').map(ip => ip.trim()).join('\n') : '',
       serverIp: node.serverIp || '',
       domain: node.domain || '',
+      serverIpv6: node.serverIpv6 || '',
+      ipv6Sub: node.ipv6Sub === 1 ? 1 : 0,
       portSta: node.portSta,
       portEnd: node.portEnd,
       http: typeof node.http === 'number' ? node.http : 1,
@@ -576,6 +603,7 @@ export default function NodePage() {
         ...form,
         serverIp,
         domain: form.domain.trim(),
+        serverIpv6: form.serverIpv6.trim(),
         ip: ipString
       };
       delete (submitData as any).ipString;
@@ -606,6 +634,8 @@ export default function NodePage() {
               ip: ipString,
               serverIp,
               domain: form.domain.trim(),
+              serverIpv6: form.serverIpv6.trim(),
+              ipv6Sub: form.ipv6Sub,
               portSta: form.portSta,
               portEnd: form.portEnd,
               http: form.http,
@@ -626,6 +656,79 @@ export default function NodePage() {
     }
   };
 
+  // 后端失败时 data 里可能带逐条错误(字符串数组,或带 msg / error / name 的对象数组)
+  const collectIpv6Errors = (res: any): string[] => {
+    const d = res?.data;
+    const list: any[] = Array.isArray(d) ? d : Array.isArray(d?.errors) ? d.errors : [];
+    return list
+      .map((x: any) => {
+        if (typeof x === 'string') return x;
+        if (x && typeof x === 'object') {
+          const msg = x.msg || x.error || x.message || '';
+          const who = x.name || x.tag || x.protocol || x.port || '';
+          return who && msg ? `${who}:${msg}` : (msg || JSON.stringify(x));
+        }
+        return String(x);
+      })
+      .filter(Boolean);
+  };
+
+  // 后端失败时逐条原因写在 msg 里:「<总述>。失败的:a;b[。切回也失败了:c(原因);d(原因)]」
+  const parseIpv6Msg = (msg: string): { title: string; items: string[] } => {
+    const marker = '失败的:';
+    const rbMarker = '切回也失败了:';
+    const idx = msg.indexOf(marker);
+    if (idx < 0) return { title: msg, items: [] };
+    const title = msg.slice(0, idx).trim().replace(/。+$/, '');
+    let rest = msg.slice(idx + marker.length);
+    let rbPart = '';
+    const rbIdx = rest.indexOf('。' + rbMarker);
+    if (rbIdx >= 0) {
+      rbPart = rest.slice(rbIdx + 1 + rbMarker.length);
+      rest = rest.slice(0, rbIdx);
+    }
+    const split = (s: string) => s.split(';').map(x => x.trim()).filter(Boolean);
+    return { title, items: [...split(rest), ...split(rbPart).map(x => `切回失败:${x}`)] };
+  };
+
+  const confirmIpv6Switch = async () => {
+    if (!ipv6Confirm) return;
+    const { node, enable } = ipv6Confirm;
+    setIpv6Confirm(null);
+    setNodeList(prev => prev.map(n => n.id === node.id ? { ...n, ipv6Loading: true } : n));
+    try {
+      const res: any = enable ? await enableNodeIpv6(node.id) : await disableNodeIpv6(node.id);
+      if (res.code === 0) {
+        toast.success(enable ? '已开启 IPv6' : '已关闭 IPv6');
+        setNodeList(prev => prev.map(n => n.id === node.id ? { ...n, ipv6Dual: enable ? 1 : 0 } : n));
+      } else {
+        const fallback = enable ? '开启 IPv6 失败' : '关闭 IPv6 失败';
+        const msg: string = typeof res?.msg === 'string' ? res.msg : '';
+        if (/timeout/i.test(msg) || msg.includes('网络请求失败')) {
+          // 请求超时 / 网络错误:节点上可能已经切完,不能当失败
+          toast.error('结果未知:可能已经切换完成,请刷新页面确认当前状态');
+          loadNodes();
+          return;
+        }
+        let items = collectIpv6Errors(res);
+        let title = msg || fallback;
+        if (!items.length && msg) {
+          const parsed = parseIpv6Msg(msg);
+          title = parsed.title || fallback;
+          items = parsed.items;
+        }
+        toast.error(title);
+        if (items.length) {
+          setIpv6Errors({ title: `${node.name}:${title}`, items });
+        }
+      }
+    } catch (error) {
+      toast.error('网络错误,请刷新看一下当前状态');
+    } finally {
+      setNodeList(prev => prev.map(n => n.id === node.id ? { ...n, ipv6Loading: false } : n));
+    }
+  };
+
   // 重置表单
   const resetForm = () => {
     setForm({
@@ -634,6 +737,8 @@ export default function NodePage() {
       ipString: '',
       serverIp: '',
       domain: '',
+      serverIpv6: '',
+      ipv6Sub: 0,
       portSta: 1000,
       portEnd: 65535,
       http: 0,
@@ -871,6 +976,40 @@ export default function NodePage() {
                     </div>
                   </div>
 
+                  {/* IPv6 */}
+                  <div className="mb-3 p-2 rounded border border-divider text-xs space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-default-600">IPv6</span>
+                      <span className="font-mono truncate" title={node.serverIpv6 || ''}>
+                        {node.serverIpv6 || '未填'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={node.ipv6Dual === 1 ? 'text-success-600' : 'text-default-500'}>
+                        {node.ipv6Dual === 1 ? '已开启 IPv6(IPv4 和 IPv6 都收)' : '未开启'}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        color={node.ipv6Dual === 1 ? 'warning' : 'primary'}
+                        className="min-h-7 h-7"
+                        isDisabled={node.canSwitchListen === false}
+                        isLoading={node.ipv6Loading}
+                        onPress={() => setIpv6Confirm({ node, enable: node.ipv6Dual !== 1 })}
+                      >
+                        {node.ipv6Dual === 1 ? '关闭 IPv6' : '开启 IPv6'}
+                      </Button>
+                    </div>
+                    {node.canSwitchListen === false && (
+                      <div className="text-warning-600">节点程序太旧,先升级节点程序(v14)</div>
+                    )}
+                    <div className="text-default-500">
+                      订阅加 IPv6 节点:{node.ipv6Sub === 1 ? '开' : '关'}
+                      {node.ipv6Sub === 1 && node.ipv6Dual !== 1 ? '(未开启 IPv6,暂不生效)' : ''}
+                      (在「编辑」里改)
+                    </div>
+                  </div>
+
                   {/* 操作按钮 */}
                   <div className="space-y-1.5">
                     <div className="flex gap-1.5">
@@ -967,6 +1106,41 @@ export default function NodePage() {
                   variant="bordered"
                   description="填了之后,车友订阅里的节点地址显示成这个域名,看不到你的服务器 IP。需要先把域名解析(A 记录)到上面那个 IP。注意:域名只是不直接显示 IP,对方 ping 一下还是查得到"
                 />
+
+                {isEdit && (() => {
+                  const editing = nodeList.find(n => n.id === form.id);
+                  const reported = (editing?.reportedIpv6 || []).filter(Boolean);
+                  const dual = editing?.ipv6Dual === 1;
+                  return (
+                    <>
+                      <Input
+                        label="公网 IPv6(可选)"
+                        placeholder="如 2001:db8::1"
+                        value={form.serverIpv6}
+                        onChange={(e) => setForm(prev => ({ ...prev, serverIpv6: e.target.value }))}
+                        isInvalid={!!errors.serverIpv6}
+                        errorMessage={errors.serverIpv6}
+                        variant="bordered"
+                        description={`公网 IPv6,留空清除。节点上报的:${reported.length ? reported.join('、') : '没有(节点没上报公网 IPv6)'}`}
+                      />
+                      <div className="flex items-start justify-between gap-3 px-1">
+                        <div className="text-sm">
+                          <div>订阅加 IPv6 节点</div>
+                          <div className="text-xs text-default-500 mt-0.5">
+                            车友订阅里每个协议多一条带 v6 的线路;车友网络没有 IPv6 时这些线路连不上。
+                            只有这台已开启 IPv6(卡片上的「开启 IPv6」)且填了公网 IPv6 时才生效
+                            {dual ? '' : ',当前未开启,打开也暂不生效'}。
+                          </div>
+                        </div>
+                        <Switch
+                          size="sm"
+                          isSelected={form.ipv6Sub === 1}
+                          onValueChange={(v) => setForm(prev => ({ ...prev, ipv6Sub: v ? 1 : 0 }))}
+                        />
+                      </div>
+                    </>
+                  );
+                })()}
 
                 <Textarea
                   label="入口IP"
@@ -1150,6 +1324,43 @@ export default function NodePage() {
         </Modal>
 
         <NodeMonitorModal node={monitorNode} onClose={() => setMonitorNode(null)} />
+
+        {/* 开启 / 关闭 IPv6 确认 */}
+        <Modal isOpen={!!ipv6Confirm} onClose={() => setIpv6Confirm(null)} size="md">
+          <ModalContent>
+            <ModalHeader>
+              {ipv6Confirm?.enable ? '开启 IPv6' : '关闭 IPv6'}:{ipv6Confirm?.node.name}
+            </ModalHeader>
+            <ModalBody>
+              <p className="text-sm">
+                {ipv6Confirm?.enable
+                  ? '会把这台转发机上协议用的公网端口改成 IPv4 和 IPv6 都收。正在用的 IPv4 连接不断;Hysteria2 / TUIC 这类 UDP 连接会重连一次。失败会自动尝试切回原样。'
+                  : '会把这台转发机上协议用的公网端口改回只收 IPv4,通过 IPv6 连进来的车友会断开。正在用的 IPv4 连接不断;Hysteria2 / TUIC 这类 UDP 连接会重连一次。失败会自动尝试切回原样。'}
+              </p>
+            </ModalBody>
+            <ModalFooter>
+              <Button variant="light" onPress={() => setIpv6Confirm(null)}>取消</Button>
+              <Button color={ipv6Confirm?.enable ? 'primary' : 'warning'} onPress={confirmIpv6Switch}>
+                {ipv6Confirm?.enable ? '开启' : '关闭'}
+              </Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+
+        {/* IPv6 切换失败的逐条原因 */}
+        <Modal isOpen={!!ipv6Errors} onClose={() => setIpv6Errors(null)} size="lg" scrollBehavior="inside">
+          <ModalContent>
+            <ModalHeader>{ipv6Errors?.title}</ModalHeader>
+            <ModalBody>
+              <ul className="text-sm space-y-1 list-disc pl-5">
+                {ipv6Errors?.items.map((it, i) => <li key={i} className="break-all">{it}</li>)}
+              </ul>
+            </ModalBody>
+            <ModalFooter>
+              <Button onPress={() => setIpv6Errors(null)}>知道了</Button>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
 
         {/* 安装命令模态框 */}
         <Modal 

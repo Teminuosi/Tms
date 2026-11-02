@@ -322,13 +322,24 @@ public class GostUtil {
         return data;
     }
 
+    /**
+     * 监听地址。"[::]" 输出成 ":端口"(Go 里空主机 = 双栈全部地址,IPv4 和 IPv6 都收);
+     * 其它写法(含 0.0.0.0、具体 IP)原样拼接,行为不变。
+     */
+    static String listenAddr(String host, Integer port) {
+        if ("[::]".equals(host)) {
+            return ":" + port;
+        }
+        return host + ":" + port;
+    }
+
     private static JSONObject createServiceConfig(String name, Integer in_port, Integer limiter, String remoteAddr, String protocol, Integer fow_type, Tunnel tunnel, String strategy, String interfaceName) {
         JSONObject service = new JSONObject();
         service.put("name", name + "_" + protocol);
         if (Objects.equals(protocol, "tcp")){
-            service.put("addr", tunnel.getTcpListenAddr() + ":" + in_port);
+            service.put("addr", listenAddr(tunnel.getTcpListenAddr(), in_port));
         }else {
-            service.put("addr", tunnel.getUdpListenAddr() + ":" + in_port);
+            service.put("addr", listenAddr(tunnel.getUdpListenAddr(), in_port));
         }
 
         if (StringUtils.isNotBlank(interfaceName)) {

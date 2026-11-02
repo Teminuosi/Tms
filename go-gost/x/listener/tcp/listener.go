@@ -46,6 +46,7 @@ func (l *tcpListener) Init(md md.Metadata) (err error) {
 		return
 	}
 
+	l.options.Addr = xnet.NormalizeWildcardAddr(l.options.Addr)
 	network := "tcp"
 	if xnet.IsIPv4(l.options.Addr) {
 		network = "tcp4"

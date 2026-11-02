@@ -30,6 +30,16 @@ type SetDSCP interface {
 	SetDSCP(int) error
 }
 
+// NormalizeWildcardAddr 把 "[::]:p" 改写成 ":p"。
+// 两者在支持 IPv6 的机器上等价(都是双栈监听);但禁用了 IPv6 的机器上
+// "[::]:p" 会直接 bind 失败,而 ":p" 由 Go 自动回落到 IPv4,不至于整个程序起不来。
+func NormalizeWildcardAddr(address string) string {
+	if strings.HasPrefix(address, "[::]:") {
+		return address[4:]
+	}
+	return address
+}
+
 func IsIPv4(address string) bool {
 	return address != "" && address[0] != ':' && address[0] != '['
 }

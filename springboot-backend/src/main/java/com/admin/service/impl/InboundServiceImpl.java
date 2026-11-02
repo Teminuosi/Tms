@@ -801,10 +801,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             SubNames.Name nm = SubNames.resolve(in.getProtocol(), in.getRemark(), node.getName(), ln,
                     lid != null, true, names.line(in.getNodeId(), lid), names.inbound(in.getId()));
 
-            String link = buildClientLink(in, iu, node, forward, nm);
-            if (link != null && !link.isEmpty()) {
-                links.add(link);
-            }
+            addSubLinks(links, in, iu, node, forward, nm);
         }
         // 【转发】分给该车友的转发也进这条聚合订阅。
         // 为什么只在聚合订阅里出现:转发不属于任何一条"线路"(线路 = 机器 × 落地组),
@@ -861,6 +858,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
         List<java.util.Map<String, Object>> proxies = new java.util.ArrayList<>();
         java.util.Set<String> usedNames = ClashUtil.newNameSet();
+        List<Runnable> pendingV6 = new java.util.ArrayList<>();
         java.util.Map<String, Boolean> lineStopped = new HashMap<>();
         java.util.Map<Long, Node> nodeCache = new HashMap<>();
         java.util.Map<Long, String> landingNames = new HashMap<>();
@@ -905,35 +903,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             String remark = SubNames.resolve(in.getProtocol(), in.getRemark(), node.getName(), ln,
                     lid != null, aggUser != null, names.line(in.getNodeId(), lid), names.inbound(in.getId())).text;
 
-            String ip = (node.getDomain() != null && !node.getDomain().trim().isEmpty())
-                    ? node.getDomain().trim()
-                    : (node.getServerIp() == null ? null : node.getServerIp().trim()); // 老数据里可能存了带空格的 IP
-            String ssMethod = null;
-            if ("shadowsocks".equals(in.getProtocol())) {
-                JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
-                ssMethod = cfg.getString("method");
-            }
-            // vmess 可能带 ws:和链接订阅读同一份 configJson,两边必须一致
-            String wsPath = null, wsHost = null;
-            if ("vmess".equalsIgnoreCase(in.getProtocol()) && in.getConfigJson() != null
-                    && !in.getConfigJson().isEmpty()) {
-                JSONObject vc = JSON.parseObject(in.getConfigJson());
-                if ("ws".equalsIgnoreCase(vc.getString("net"))) {
-                    wsPath = vc.getString("path");
-                    wsHost = vc.getString("host");
-                }
-            }
-            java.util.Map<String, Object> proxy = ClashUtil.toProxy(
-                    in.getProtocol(),
-                    ClashUtil.uniqueName(remark, usedNames),
-                    ip, forward.getInPort(),
-                    iu.getUuid(), iu.getPassword(), in.getSni(),
-                    in.getPublicKey(), in.getShortId(), ssMethod,
-                    wsPath, wsHost);
-            if (proxy != null) {
-                proxies.add(proxy);
-            }
+            addClashProxies(proxies, usedNames, in, iu, node, forward, remark, pendingV6);
         }
+        pendingV6.forEach(Runnable::run);
         if (proxies.isEmpty()) {
             // 空 proxies 的配置 Mihomo 会直接报错。给一条 DIRECT 占位,
             // 至少订阅能导进去,车友看到的是「没有节点」而不是「订阅损坏」。
@@ -945,6 +917,73 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             return empty.toString();
         }
         return ClashUtil.buildConfig(proxies);
+    }
+
+    /** Clash 一条入站:正常那条;双栈都出时紧跟一条 server=裸 IPv6、名字带「 v6」的(分组由 buildConfig 按 proxies 全量生成) */
+    static void addClashProxies(List<java.util.Map<String, Object>> proxies, java.util.Set<String> usedNames,
+                                Inbound in, InboundUser iu, Node node, Forward forward, String remark) {
+        List<Runnable> pendingV6 = new java.util.ArrayList<>();
+        addClashProxies(proxies, usedNames, in, iu, node, forward, remark, pendingV6);
+        pendingV6.forEach(Runnable::run);
+    }
+
+    /**
+     * 先只出 v4 那条(名字照旧);v6 那条放进 pendingV6,等整份订阅的 v4 名字全部占好以后再跑,
+     * 名字 = v4 实际用的名字 + 「 v6」再去重 —— 开双栈永远不会改动任何一条 v4 节点的名字
+     * (比如车友另有一个就叫「X v6」的节点)。v6 那条插在自己 v4 那条后面。
+     */
+    static void addClashProxies(List<java.util.Map<String, Object>> proxies, java.util.Set<String> usedNames,
+                                Inbound in, InboundUser iu, Node node, Forward forward, String remark,
+                                List<Runnable> pendingV6) {
+        java.util.Map<String, Object> proxy = clashProxy(ClashUtil.uniqueName(remark, usedNames), in, iu, linkHost(node), forward);
+        if (proxy == null) {
+            return;
+        }
+        proxies.add(proxy);
+        String v6 = dualV6Host(node);
+        if (v6 != null) {
+            pendingV6.add(() -> {
+                java.util.Map<String, Object> p6 = clashProxy(
+                        ClashUtil.uniqueName(proxy.get("name") + " v6", usedNames), in, iu, v6, forward);
+                if (p6 == null) {
+                    return;
+                }
+                int at = proxies.size();
+                for (int i = 0; i < proxies.size(); i++) {
+                    if (proxies.get(i) == proxy) {
+                        at = i + 1;
+                        break;
+                    }
+                }
+                proxies.add(at, p6);
+            });
+        }
+    }
+
+    private static java.util.Map<String, Object> clashProxy(String name, Inbound in, InboundUser iu,
+                                                            String ip, Forward forward) {
+        String ssMethod = null;
+        if ("shadowsocks".equals(in.getProtocol())) {
+            JSONObject cfg = JSON.parseObject(in.getConfigJson() == null ? "{}" : in.getConfigJson());
+            ssMethod = cfg.getString("method");
+        }
+        // vmess 可能带 ws:和链接订阅读同一份 configJson,两边必须一致
+        String wsPath = null, wsHost = null;
+        if ("vmess".equalsIgnoreCase(in.getProtocol()) && in.getConfigJson() != null
+                && !in.getConfigJson().isEmpty()) {
+            JSONObject vc = JSON.parseObject(in.getConfigJson());
+            if ("ws".equalsIgnoreCase(vc.getString("net"))) {
+                wsPath = vc.getString("path");
+                wsHost = vc.getString("host");
+            }
+        }
+        return ClashUtil.toProxy(
+                in.getProtocol(),
+                name,
+                ip, forward.getInPort(),
+                iu.getUuid(), iu.getPassword(), in.getSni(),
+                in.getPublicKey(), in.getShortId(), ssMethod,
+                wsPath, wsHost);
     }
 
     /** 取(必要时生成)该车友的「全部线路」聚合订阅 token */
@@ -983,20 +1022,58 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
      * 用到车友自己设置的名字时,# 后面改用 %20 编码空格(老名字逐字节不变,见 SubNames.encodeFragment)。
      */
     private String buildClientLink(Inbound in, InboundUser iu, Node node, Forward forward, SubNames.Name nm) {
-        String link = buildClientLinkRaw(in, iu, node, forward, nm.text);
-        if (nm.userSet && link != null && !"vmess".equals(in.getProtocol())) {
-            link = SubNames.withFragment(link, nm.text);
+        return clientLink(in, iu, linkHost(node), forward, nm.text, nm.userSet);
+    }
+
+    /** 订阅里一条入站的链接:先正常那条;节点开了「订阅出 IPv6」且「双栈都出」时紧跟一条 v6 的 */
+    static void addSubLinks(List<String> links, Inbound in, InboundUser iu, Node node, Forward forward, SubNames.Name nm) {
+        String link = clientLink(in, iu, linkHost(node), forward, nm.text, nm.userSet);
+        if (link != null && !link.isEmpty()) {
+            links.add(link);
+        }
+        String v6 = dualV6Host(node);
+        if (v6 != null) {
+            String l6 = clientLink(in, iu, v6, forward, nm.text + " v6", nm.userSet);
+            if (l6 != null && !l6.isEmpty()) {
+                links.add(l6);
+            }
+        }
+    }
+
+    /**
+     * 双栈额外那条用的 IPv6 地址(不带方括号;链接里的方括号由 SingboxUtil 各 build*Link 经 uriHost 加,
+     * vmess 的 add 字段和 Clash 的 server 字段要的就是裸地址)。条件不满足返回 null,订阅逐字节不变。
+     */
+    static String dualV6Host(Node node) {
+        if (node == null || node.getIpv6Sub() == null || node.getIpv6Sub() != 1
+                || node.getIpv6Dual() == null || node.getIpv6Dual() != 1 || node.getServerIpv6() == null) {
+            return null;
+        }
+        String h = node.getServerIpv6().trim();
+        if (h.startsWith("[") && h.endsWith("]")) {
+            h = h.substring(1, h.length() - 1).trim();
+        }
+        return h.isEmpty() ? null : h;
+    }
+
+    /** 转发机配了域名就用域名 —— 车友在客户端里看到的是 hk.example.com 而不是车主的 IP */
+    static String linkHost(Node node) {
+        return (node.getDomain() != null && !node.getDomain().trim().isEmpty())
+                ? node.getDomain().trim()
+                : (node.getServerIp() == null ? null : node.getServerIp().trim()); // 老数据里可能存了带空格的 IP
+    }
+
+    static String clientLink(Inbound in, InboundUser iu, String host, Forward forward, String text, boolean userSet) {
+        String link = buildClientLinkRaw(in, iu, host, forward, text);
+        if (userSet && link != null && !"vmess".equals(in.getProtocol())) {
+            link = SubNames.withFragment(link, text);
         }
         return link;
     }
 
-    private String buildClientLinkRaw(Inbound in, InboundUser iu, Node node, Forward forward, String remark) {
+    private static String buildClientLinkRaw(Inbound in, InboundUser iu, String ip, Forward forward, String remark) {
         String uuid = iu.getUuid();
         String password = iu.getPassword();
-        // 转发机配了域名就用域名 —— 车友在客户端里看到的是 hk.example.com 而不是车主的 IP
-        String ip = (node.getDomain() != null && !node.getDomain().trim().isEmpty())
-                ? node.getDomain().trim()
-                : (node.getServerIp() == null ? null : node.getServerIp().trim()); // 老数据里可能存了带空格的 IP
         Integer port = forward.getInPort();
         switch (in.getProtocol() == null ? "" : in.getProtocol()) {
             case "shadowsocks": {
@@ -1072,11 +1149,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             }
             // 单条线路订阅不带「机器→落地」前缀;车友名字(线路别名 / 协议名)照样生效(三月拍板 1)
             SubNames.UserNames names = namesByUser.computeIfAbsent(iu.getUserId(), nodeNameStore::load);
-            String link = buildClientLink(in, iu, node, forward, SubNames.resolve(in.getProtocol(), in.getRemark(),
+            addSubLinks(links, in, iu, node, forward, SubNames.resolve(in.getProtocol(), in.getRemark(),
                     node.getName(), null, lid != null, false, names.line(in.getNodeId(), lid), names.inbound(in.getId())));
-            if (link != null && !link.isEmpty()) {
-                links.add(link);
-            }
         }
         String joined = String.join("\n", links);
         return java.util.Base64.getEncoder().encodeToString(joined.getBytes(java.nio.charset.StandardCharsets.UTF_8));

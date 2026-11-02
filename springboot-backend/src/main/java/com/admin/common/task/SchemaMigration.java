@@ -47,6 +47,14 @@ public class SchemaMigration implements ApplicationRunner {
         // 只存分配给车友的那些;车主自己的转发不写这一列。
         addColumnIfMissing("forward", "client_link",
                 "ALTER TABLE `forward` ADD COLUMN `client_link` VARCHAR(1024) NULL COMMENT '给车友的客户端链接(进聚合订阅用)'");
+
+        // IPv6:服务器 v6 地址 / 订阅出 v6 节点 / 双栈
+        addColumnIfMissing("node", "server_ipv6",
+                "ALTER TABLE `node` ADD COLUMN `server_ipv6` VARCHAR(64) NULL COMMENT '服务器IPv6地址(可选)'");
+        addColumnIfMissing("node", "ipv6_sub",
+                "ALTER TABLE `node` ADD COLUMN `ipv6_sub` TINYINT NOT NULL DEFAULT 0 COMMENT '订阅出IPv6节点'");
+        addColumnIfMissing("node", "ipv6_dual",
+                "ALTER TABLE `node` ADD COLUMN `ipv6_dual` TINYINT NOT NULL DEFAULT 0 COMMENT 'IPv6双栈'");
     }
 
     /** 列不存在才执行 ddl;任何异常都吞掉(只记日志),不能因为迁移失败导致面板起不来 */

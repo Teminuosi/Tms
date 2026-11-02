@@ -113,6 +113,8 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
             n.setSingboxInstalled(com.admin.common.utils.WebSocketServer.getSingboxInstalled(n.getId()));
             n.setSingboxInstalling(com.admin.common.utils.WebSocketServer.getSingboxInstalling(n.getId()));
             n.setSingboxInstallErr(com.admin.common.utils.WebSocketServer.getSingboxInstallErr(n.getId()));
+            n.setReportedIpv6(com.admin.common.utils.WebSocketServer.nodeV6Addrs(n.getId()));
+            n.setCanSwitchListen(com.admin.common.utils.WebSocketServer.nodeCaps(n.getId()).contains("listen_switch"));
         }
         return R.ok(nodeList);
     }
@@ -129,6 +131,20 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
         Node node = this.getById(nodeUpdateDto.getId());
         if (node == null) {
             return R.err(ERROR_NODE_NOT_FOUND);
+        }
+
+        // 1.0 IPv6 字段校验(null = 前端没传,不改);必须在给节点发 SetProtocol 之前,校验不过什么都不动
+        String v6 = nodeUpdateDto.getServerIpv6();
+        if (v6 != null) {
+            try {
+                v6 = normalizeServerIpv6(v6);
+            } catch (IllegalArgumentException e) {
+                return R.err(e.getMessage());
+            }
+        }
+        Integer v6Sub = nodeUpdateDto.getIpv6Sub();
+        if (v6Sub != null && v6Sub != 0 && v6Sub != 1) {
+            return R.err("ipv6_sub 只能是 0 或 1");
         }
 
         //1.1 如果节点在线 且传入更新的 http/tls/socks 任意一项与数据库不一致，则通过 WS 通知节点更新设置
@@ -156,7 +172,17 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
 
         // 2. 构建更新对象并执行更新
         Node updateNode = buildUpdateNode(nodeUpdateDto);
+        updateNode.setIpv6Sub(v6Sub);
+        if (v6 != null && !v6.isEmpty()) {
+            updateNode.setServerIpv6(v6);
+        }
         boolean result = this.updateById(updateNode);
+        if (result && v6 != null && v6.isEmpty()) {
+            // updateById 会跳过 null 字段,清空要单独 set
+            this.update(new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<Node>()
+                    .eq(Node::getId, updateNode.getId())
+                    .set(Node::getServerIpv6, null));
+        }
 
         // 更新隧道入口ip
         List<Tunnel> inNodeId = tunnelService.list(new QueryWrapper<Tunnel>().eq("in_node_id", updateNode.getId()));
@@ -258,6 +284,39 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
      * @param nodeUpdateDto 节点更新DTO
      * @return 构建完成的更新对象
      */
+    /**
+     * 规范化服务器 IPv6:去空格、去方括号、转小写。空串返回 ""(表示清空)。
+     * 只接受公网单播(2000::/3)的 IPv6 字面量;域名、IPv4、IPv4 映射地址、带 %zone 的都拒绝。
+     * 只做字面量解析,不会触发 DNS 查询(先按字符集挡掉非地址)。
+     */
+    public static String normalizeServerIpv6(String raw) {
+        String s = raw == null ? "" : raw.trim();
+        if (s.startsWith("[") && s.endsWith("]")) {
+            s = s.substring(1, s.length() - 1).trim();
+        }
+        if (s.isEmpty()) {
+            return "";
+        }
+        s = s.toLowerCase(java.util.Locale.ROOT);
+        String err = "服务器 IPv6 格式不对,要填公网 IPv6 地址(2 或 3 开头),例如 2001:db8::1";
+        if (s.length() > 45 || !s.contains(":") || !s.matches("[0-9a-f:.]+")) {
+            throw new IllegalArgumentException(err);
+        }
+        java.net.InetAddress addr;
+        try {
+            addr = java.net.InetAddress.getByName(s);
+        } catch (Exception e) {
+            throw new IllegalArgumentException(err);
+        }
+        if (!(addr instanceof java.net.Inet6Address)) {
+            throw new IllegalArgumentException(err);
+        }
+        if ((addr.getAddress()[0] & 0xE0) != 0x20) {
+            throw new IllegalArgumentException(err);
+        }
+        return s;
+    }
+
     private Node buildUpdateNode(NodeUpdateDto nodeUpdateDto) {
         Node node = new Node();
         node.setId(nodeUpdateDto.getId());

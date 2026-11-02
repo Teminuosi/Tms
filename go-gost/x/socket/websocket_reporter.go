@@ -54,6 +54,11 @@ type SystemInfo struct {
 	// 这条正是为那种情况准备的。
 	SingboxInstalled bool `json:"singbox_installed"`
 
+	// IPv6Addrs 本机的公网 IPv6(过滤掉链路本地、ULA、回环、文档段、WARP 等),没有就不带
+	IPv6Addrs []string `json:"ipv6_addrs,omitempty"`
+	// Caps 节点程序支持的能力;listen_switch = 认 SwitchServiceAddr 命令
+	Caps []string `json:"caps,omitempty"`
+
 	// Probe 延迟监测最近一轮的结果,只在测完后的下一次上报里带一次(见 probe.go)
 	Probe *ProbeReport `json:"probe,omitempty"`
 }
@@ -336,6 +341,8 @@ func (w *WebSocketReporter) collectSystemInfo() SystemInfo {
 		SingboxInstalling: singboxInstallingNow(),
 		SingboxInstallErr: singboxLastInstallErr(),
 		Probe:             takeProbeReport(),
+		IPv6Addrs:         collectGlobalIPv6(),
+		Caps:              []string{"listen_switch"},
 	}
 }
 
@@ -587,6 +594,13 @@ func (w *WebSocketReporter) routeCommand(cmd CommandMessage) {
 	case "ResumeService":
 		err = w.handleResumeService(cmd.Data)
 		response.Type = "ResumeServiceResponse"
+	case "SwitchServiceAddr":
+		var switchResult map[string]interface{}
+		switchResult, err = w.handleSwitchServiceAddr(cmd.Data)
+		response.Type = "SwitchServiceAddrResponse"
+		if switchResult != nil {
+			response.Data = switchResult
+		}
 
 	// Chain 相关命令
 	case "AddChains":

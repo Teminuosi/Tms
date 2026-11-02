@@ -73,6 +73,80 @@ public class WebSocketServer extends TextWebSocketHandler {
     public static Boolean getSingboxRunning(Long nodeId) {
         return nodeId == null ? null : singboxRunning.get(nodeId);
     }
+
+    /** 节点上报的公网 IPv6 地址(ipv6_addrs);没报过返回空列表 */
+    private static final ConcurrentHashMap<Long, java.util.List<String>> nodeV6Addrs = new ConcurrentHashMap<>();
+    /** 节点上报的能力标记(caps),如 listen_switch;没报过返回空列表 */
+    private static final ConcurrentHashMap<Long, java.util.List<String>> nodeCaps = new ConcurrentHashMap<>();
+
+    public static java.util.List<String> nodeV6Addrs(Long nodeId) {
+        java.util.List<String> v = nodeId == null ? null : nodeV6Addrs.get(nodeId);
+        return v == null ? java.util.Collections.emptyList() : v;
+    }
+
+    public static java.util.List<String> nodeCaps(Long nodeId) {
+        java.util.List<String> v = nodeId == null ? null : nodeCaps.get(nodeId);
+        return v == null ? java.util.Collections.emptyList() : v;
+    }
+
+    /** 取 JSON 里的字符串数组;字段不存在或格式不对返回 null(表示「没上报」,不覆盖缓存) */
+    static java.util.List<String> stringList(JSONObject info, String key) {
+        if (info == null || !info.containsKey(key)) {
+            return null;
+        }
+        try {
+            com.alibaba.fastjson.JSONArray arr = info.getJSONArray(key);
+            if (arr == null) {
+                return java.util.Collections.emptyList();
+            }
+            java.util.List<String> out = new java.util.ArrayList<>();
+            for (Object o : arr) {
+                if (o != null && !o.toString().trim().isEmpty()) {
+                    out.add(o.toString().trim());
+                }
+            }
+            return java.util.Collections.unmodifiableList(out);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 记下 ipv6_addrs / caps;v6 列表有变化且节点没填 server_ipv6 时,把第一个写进库(只动这一列) */
+    private void recordV6AndCaps(Long nodeId, JSONObject info) {
+        java.util.List<String> caps = stringList(info, "caps");
+        if (caps != null) {
+            nodeCaps.put(nodeId, caps);
+        }
+        java.util.List<String> addrs = stringList(info, "ipv6_addrs");
+        if (addrs == null) {
+            return;
+        }
+        java.util.List<String> old = nodeV6Addrs.put(nodeId, addrs);
+        // 系统信息几秒一报,只在列表变化(含首次)时才查库,避免每次都打 DB
+        if (addrs.isEmpty() || addrs.equals(old) || nodeService == null) {
+            return;
+        }
+        try {
+            Node node = nodeService.getById(nodeId);
+            if (node == null || (node.getServerIpv6() != null && !node.getServerIpv6().trim().isEmpty())) {
+                return;
+            }
+            String first;
+            try {
+                first = com.admin.service.impl.NodeServiceImpl.normalizeServerIpv6(addrs.get(0));
+            } catch (IllegalArgumentException bad) {
+                return;
+            }
+            if (first.isEmpty()) {
+                return;
+            }
+            nodeService.update(new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<Node>()
+                    .eq(Node::getId, nodeId)
+                    .set(Node::getServerIpv6, first));
+        } catch (Exception e) {
+            log.warn("自动填写节点 {} 的 IPv6 失败: {}", nodeId, e.getMessage());
+        }
+    }
     
     // 为每个session提供锁对象，防止并发发送消息
     private static final ConcurrentHashMap<String, Object> sessionLocks = new ConcurrentHashMap<>();
@@ -178,6 +252,9 @@ public class WebSocketServer extends TextWebSocketHandler {
                         }
                         if (info != null && info.containsKey("singbox_running")) {
                             singboxRunning.put(Long.valueOf(id), info.getBooleanValue("singbox_running"));
+                        }
+                        if (info != null) {
+                            recordV6AndCaps(Long.valueOf(id), info);
                         }
                         // 攒历史曲线(只动内存,写库在定时任务里)
                         MetricCollector.onNodeInfo(Long.valueOf(id), info);

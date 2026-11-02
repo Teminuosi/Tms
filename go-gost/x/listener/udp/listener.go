@@ -44,6 +44,7 @@ func (l *udpListener) Init(md md.Metadata) (err error) {
 		return
 	}
 
+	l.options.Addr = xnet.NormalizeWildcardAddr(l.options.Addr)
 	network := "udp"
 	if xnet.IsIPv4(l.options.Addr) {
 		network = "udp4"

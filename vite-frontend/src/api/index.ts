@@ -28,6 +28,8 @@ export const createNode = (data: any) => Network.post("/node/create", data);
 export const getNodeList = () => Network.post("/node/list");
 export const updateNode = (data: any) => Network.post("/node/update", data);
 export const deleteNode = (id: number) => Network.post("/node/delete", { id });
+export const enableNodeIpv6 = (nodeId: number) => Network.post("/node/enable-ipv6", { nodeId });
+export const disableNodeIpv6 = (nodeId: number) => Network.post("/node/disable-ipv6", { nodeId });
 // 监控:转发机历史曲线
 export const getNodeMetrics = (nodeId: number, range: string) => Network.post("/monitor/metrics", { nodeId, range });
 export const getNodeProbes = (nodeId: number, range: string) => Network.post("/monitor/probes", { nodeId, range });

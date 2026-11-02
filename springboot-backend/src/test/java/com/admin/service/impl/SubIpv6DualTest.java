@@ -1,0 +1,204 @@
+package com.admin.service.impl;
+
+import com.admin.common.utils.ClashUtil;
+import com.admin.common.utils.SingboxUtil;
+import com.admin.common.utils.SubNames;
+import com.admin.entity.Forward;
+import com.admin.entity.Inbound;
+import com.admin.entity.InboundUser;
+import com.admin.entity.Node;
+import org.junit.jupiter.api.Test;
+
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/** 订阅「IPv6 双栈都出」:关着时逐字节不变;开着时每条入站后面紧跟一条 v6 的(地址 2001:db8::/32 文档段) */
+class SubIpv6DualTest {
+
+    static final String V6 = "2001:db8::1";
+    static final String[] PROTOS = {"vless", "vmess", "hysteria2", "shadowsocks", "trojan", "tuic", "anytls"};
+
+    static Node node(Integer sub, Integer dual, String v6) {
+        Node n = new Node();
+        n.setName("机A");
+        n.setServerIp(" 203.0.113.5 ");
+        n.setServerIpv6(v6);
+        n.setIpv6Sub(sub);
+        n.setIpv6Dual(dual);
+        return n;
+    }
+
+    static Inbound inbound(String proto) {
+        Inbound in = new Inbound();
+        in.setProtocol(proto);
+        in.setSni("www.example.com");
+        in.setPublicKey("pk");
+        in.setShortId("ab");
+        if ("shadowsocks".equals(proto)) in.setConfigJson("{\"method\":\"aes-128-gcm\",\"password\":\"sspw\"}");
+        if ("vmess".equals(proto)) in.setConfigJson("{\"net\":\"ws\",\"path\":\"/p\",\"host\":\"h.example.com\"}");
+        return in;
+    }
+
+    static InboundUser iu() {
+        InboundUser u = new InboundUser();
+        u.setUuid("11111111-2222-3333-4444-555555555555");
+        u.setPassword("pw");
+        return u;
+    }
+
+    static Forward fwd() {
+        Forward f = new Forward();
+        f.setInPort(30001);
+        return f;
+    }
+
+    static SubNames.Name nm(String proto, boolean userSet) {
+        return SubNames.resolve(proto, null, "机A", null, false, true, null, userSet ? "我的 节点" : null);
+    }
+
+    /** 老逻辑原样:改动前 buildClientLinkRaw + withFragment 的写法 */
+    static String oldLink(String proto, String host, String text, boolean userSet) {
+        Inbound in = inbound(proto);
+        InboundUser u = iu();
+        String link;
+        switch (proto) {
+            case "shadowsocks": link = SingboxUtil.buildShadowsocksLink(host, 30001, "aes-128-gcm", "sspw", text); break;
+            case "vmess": link = SingboxUtil.buildVmessLink(u.getUuid(), host, 30001, text, "ws", "/p", "h.example.com"); break;
+            case "trojan": link = SingboxUtil.buildTrojanRealityLink("pw", host, 30001, in.getSni(), "pk", "ab", text); break;
+            case "hysteria2": link = SingboxUtil.buildHysteria2Link("pw", host, 30001, in.getSni(), text); break;
+            case "tuic": link = SingboxUtil.buildTuicLink(u.getUuid(), "pw", host, 30001, in.getSni(), text); break;
+            case "anytls": link = SingboxUtil.buildAnyTlsLink("pw", host, 30001, in.getSni(), text); break;
+            default: link = SingboxUtil.buildVlessRealityLink(u.getUuid(), host, 30001, in.getSni(), "pk", "ab", text);
+        }
+        if (userSet && !"vmess".equals(proto)) link = SubNames.withFragment(link, text);
+        return link;
+    }
+
+    static List<String> links(String proto, Node n, boolean userSet) {
+        List<String> out = new ArrayList<>();
+        InboundServiceImpl.addSubLinks(out, inbound(proto), iu(), n, fwd(), nm(proto, userSet));
+        return out;
+    }
+
+    @Test
+    void offIsByteIdentical() {
+        Node[] offs = {node(null, null, null), node(0, 0, V6), node(1, 0, V6), node(0, 1, V6), node(1, 1, null), node(1, 1, "  ")};
+        for (String p : PROTOS) {
+            for (boolean us : new boolean[]{false, true}) {
+                for (Node n : offs) {
+                    List<String> l = links(p, n, us);
+                    assertEquals(1, l.size(), p);
+                    assertEquals(oldLink(p, "203.0.113.5", nm(p, us).text, us), l.get(0), p);
+                }
+            }
+        }
+    }
+
+    @Test
+    void onAddsBracketedV6Link() {
+        for (String p : PROTOS) {
+            for (boolean us : new boolean[]{false, true}) {
+                for (String v6 : new String[]{V6, " [2001:db8::1] "}) {
+                    List<String> l = links(p, node(1, 1, v6), us);
+                    assertEquals(2, l.size(), p);
+                    String text = nm(p, us).text;
+                    assertEquals(oldLink(p, "203.0.113.5", text, us), l.get(0), p);
+                    assertEquals(oldLink(p, V6, text + " v6", us), l.get(1), p);
+                    if ("vmess".equals(p)) {
+                        String json = new String(Base64.getDecoder().decode(l.get(1).substring(8)), StandardCharsets.UTF_8);
+                        assertTrue(json.contains("\"add\":\"2001:db8::1\""), json);
+                        assertTrue(json.contains(" v6\""), json);
+                    } else {
+                        assertTrue(l.get(1).contains("@[2001:db8::1]:30001"), l.get(1));
+                        assertTrue(l.get(1).contains(us ? "v6" : "+v6"), l.get(1));
+                    }
+                }
+            }
+        }
+    }
+
+    static List<Map<String, Object>> clash(Node n, String... protos) {
+        List<Map<String, Object>> proxies = new ArrayList<>();
+        Set<String> used = ClashUtil.newNameSet();
+        for (String p : protos) {
+            InboundServiceImpl.addClashProxies(proxies, used, inbound(p), iu(), n, fwd(), nm(p, false).text);
+        }
+        return proxies;
+    }
+
+    @Test
+    void clashOffUnchangedOnAddsUniqueV6() {
+        String[] ps = {"vless", "vmess", "hysteria2", "shadowsocks", "vless"};
+        String off = ClashUtil.buildConfig(clash(node(null, null, null), ps));
+        assertEquals(off, ClashUtil.buildConfig(clash(node(1, 0, V6), ps)));
+        assertFalse(off.contains(" v6")); // 注意 dns 段本来就有 ipv6: false
+
+        List<Map<String, Object>> on = clash(node(1, 1, "[" + V6 + "]"), ps);
+        assertEquals(10, on.size());
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (int i = 0; i < on.size(); i++) {
+            Map<String, Object> p = on.get(i);
+            assertTrue(names.add((String) p.get("name")), "重名: " + p.get("name"));
+            assertEquals(i % 2 == 0 ? "203.0.113.5" : V6, p.get("server"));
+            if (i % 2 == 1) assertTrue(((String) p.get("name")).contains(" v6"), (String) p.get("name"));
+        }
+        // 两条同名 vless:第二条 v6 被 uniqueName 加了序号
+        assertTrue(names.contains(on.get(1).get("name")) && !on.get(1).get("name").equals(on.get(9).get("name")));
+        String yaml = ClashUtil.buildConfig(on);
+        for (String nmv : names) {
+            // 每个名字:proxies 一次 + 节点选择 + 自动选择 = 至少 3 次
+            int c = yaml.split(java.util.regex.Pattern.quote(nmv), -1).length - 1;
+            assertTrue(c >= 3, nmv + " 出现 " + c);
+        }
+    }
+
+    /** 整份订阅按 buildClash 的两段走:先全部 v4,最后补 v6 */
+    static List<Map<String, Object>> clashMany(Object[][] rows) {
+        List<Map<String, Object>> proxies = new ArrayList<>();
+        Set<String> used = ClashUtil.newNameSet();
+        List<Runnable> pending = new ArrayList<>();
+        for (Object[] r : rows) {
+            InboundServiceImpl.addClashProxies(proxies, used, inbound("vless"), iu(), (Node) r[0], fwd(), (String) r[1], pending);
+        }
+        pending.forEach(Runnable::run);
+        return proxies;
+    }
+
+    static List<String> v4Names(List<Map<String, Object>> ps) {
+        List<String> out = new ArrayList<>();
+        for (Map<String, Object> p : ps) {
+            if ("203.0.113.5".equals(p.get("server"))) out.add((String) p.get("name"));
+        }
+        return out;
+    }
+
+    @Test
+    void enablingDualNeverRenamesAnyV4Node() {
+        // 车友另有一个节点就叫「X v6」,还有一个叫「DIRECT」(Clash 保留名)
+        for (Integer dual : new Integer[]{0, 1}) {
+            Node a = node(1, dual, V6);
+            Node other = node(null, null, null);
+            Object[][] rows = {{a, "X"}, {other, "X v6"}, {a, "DIRECT"}, {other, "X v6 2"}};
+            List<Map<String, Object>> off = clashMany(new Object[][]{{node(null, null, null), "X"}, {other, "X v6"},
+                    {node(null, null, null), "DIRECT"}, {other, "X v6 2"}});
+            List<Map<String, Object>> got = clashMany(rows);
+            assertEquals(v4Names(off), v4Names(got));
+            if (dual == 1) {
+                assertEquals(6, got.size());
+                Set<String> all = new java.util.HashSet<>();
+                for (Map<String, Object> p : got) assertTrue(all.add((String) p.get("name")), "重名 " + p.get("name"));
+                // v6 紧跟自己的 v4,名字 = v4 实际名 + " v6"(再去重)
+                assertEquals(V6, got.get(1).get("server"));
+                assertTrue(((String) got.get(1).get("name")).startsWith("X v6 "), (String) got.get(1).get("name"));
+                assertEquals(V6, got.get(4).get("server"));
+                assertEquals(got.get(3).get("name") + " v6", got.get(4).get("name"));
+            }
+        }
+    }
+}

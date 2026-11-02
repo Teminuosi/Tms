@@ -62,4 +62,25 @@ public class NodeController extends BaseController {
         return nodeService.getInstallCommand(id);
     }
 
+    @javax.annotation.Resource
+    private com.admin.service.impl.NodeIpv6Switch nodeIpv6Switch;
+
+    /** 开 IPv6 双栈:自动隧道上的转发监听切到 :端口(双栈),全部成功才保存 */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/enable-ipv6")
+    public R enableIpv6(@RequestBody Map<String, Object> params) {
+        Object id = params == null ? null : params.get("nodeId");
+        return id == null ? R.err("缺少节点") : nodeIpv6Switch.enable(Long.valueOf(id.toString()));
+    }
+
+    /** 关 IPv6 双栈:切回 0.0.0.0:端口 */
+    @LogAnnotation
+    @RequireRole
+    @PostMapping("/disable-ipv6")
+    public R disableIpv6(@RequestBody Map<String, Object> params) {
+        Object id = params == null ? null : params.get("nodeId");
+        return id == null ? R.err("缺少节点") : nodeIpv6Switch.disable(Long.valueOf(id.toString()));
+    }
+
 }
