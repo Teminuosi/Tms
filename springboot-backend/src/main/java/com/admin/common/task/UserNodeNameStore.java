@@ -60,11 +60,16 @@ public class UserNodeNameStore {
             + "PRIMARY KEY (`user_id`, `scope`, `ref_key`)"
             + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='车友节点名:只进该车友订阅的线路别名/协议名/转发名'";
 
-    private static final String[] CLEANUP = {
-            // 先删格式不对的行:MySQL 5.7 严格模式下,DELETE 里 CAST 一个非数字串会报错,整条清理就不执行了
+    /** 合法的 ref_key(MySQL REGEXP 和 Java 正则写法相同,测试里直接拿来比对):最多 19 位,CAST AS UNSIGNED 不会溢出 */
+    static final String ID_KEY_RE = "^[0-9]{1,19}$";
+    static final String LINE_KEY_RE = "^[0-9]{1,19}[|][0-9]{1,19}$";
+
+    static final String[] CLEANUP = {
+            // 先删格式不对的行:MySQL 5.7 严格模式下,DELETE 里 CAST 一个非数字串会报错,整条清理就不执行了;
+            // 位数也要限:20 位以上的数字串 CAST AS UNSIGNED 一样报错(验收用 23 位复现)
             "DELETE FROM `user_node_name` WHERE `scope` NOT IN ('line', 'inbound', 'forward')",
-            "DELETE FROM `user_node_name` WHERE `scope` IN ('inbound', 'forward') AND `ref_key` NOT REGEXP '^[0-9]+$'",
-            "DELETE FROM `user_node_name` WHERE `scope` = 'line' AND `ref_key` NOT REGEXP '^[0-9]+[|][0-9]+$'",
+            "DELETE FROM `user_node_name` WHERE `scope` IN ('inbound', 'forward') AND `ref_key` NOT REGEXP '" + ID_KEY_RE + "'",
+            "DELETE FROM `user_node_name` WHERE `scope` = 'line' AND `ref_key` NOT REGEXP '" + LINE_KEY_RE + "'",
             "DELETE FROM `user_node_name` WHERE `user_id` NOT IN (SELECT `id` FROM `user`)",
             "DELETE FROM `user_node_name` WHERE `scope` = 'inbound' AND NOT EXISTS ("
                     + "SELECT 1 FROM `inbound_user` iu WHERE iu.`user_id` = `user_node_name`.`user_id` "

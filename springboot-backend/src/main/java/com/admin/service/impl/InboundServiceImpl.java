@@ -405,6 +405,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         List<InboundUser> users = inboundUserMapper.selectList(
                 new QueryWrapper<InboundUser>().eq("inbound_id", id));
         List<String> failed = new java.util.ArrayList<>();
+        java.util.Set<Long> removedUsers = new java.util.LinkedHashSet<>(); // 分配记录真删掉了的车友
         for (InboundUser u : users) {
             if (u.getGostForwardId() != null) {
                 String reason = deleteForwardOrReason(u.getGostForwardId());
@@ -415,8 +416,13 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
                 }
             }
             inboundUserMapper.deleteById(u.getId());
+            removedUsers.add(u.getUserId());
         }
         if (!failed.isEmpty()) {
+            for (Long uid : removedUsers) {
+                nodeNameStore.deleteUserInbound(uid, id);
+                clearLineAliasIfEmpty(uid, in.getNodeId(), in.getLandingId());
+            }
             if (failed.size() < users.size()) {
                 pushNodeSingbox(in.getNodeId()); // 已删掉的那几个用户要从 sing-box 里拿掉
             }
@@ -424,6 +430,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         }
         this.removeById(id);
         nodeNameStore.deleteInbound(id); // 吞异常,不影响删除
+        // 和取消分配同一个口径:这是车友在这条线路上最后一个协议 → 线路别名也清掉
+        // (清空某机器的协议走 deleteInboundsByNode → 逐条进这里,一样覆盖)
+        for (Long uid : removedUsers) {
+            clearLineAliasIfEmpty(uid, in.getNodeId(), in.getLandingId());
+        }
         pushNodeSingbox(in.getNodeId());
         return R.ok();
     }
@@ -1307,15 +1318,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         nodeNameStore.deleteUserInbound(iu.getUserId(), iu.getInboundId());
         Inbound in = this.getById(iu.getInboundId());
         if (in != null) {
-            // 这是他在这条线路上的最后一个协议 → 线路没了,别名也清掉(和删线路、重启清理一个口径,
-            // 不然以后再分配这条线路,旧别名会冒出来)
-            try {
-                if (lineInboundUsers(iu.getUserId(), in.getNodeId(), in.getLandingId()).isEmpty()) {
-                    nodeNameStore.deleteUserLine(iu.getUserId(), SubNames.lineKey(in.getNodeId(), in.getLandingId()));
-                }
-            } catch (Exception e) {
-                log.warn("取消分配后清线路别名失败(不影响取消): " + e.getMessage());
-            }
+            clearLineAliasIfEmpty(iu.getUserId(), in.getNodeId(), in.getLandingId());
             pushNodeSingbox(in.getNodeId());
         }
         return R.ok();
@@ -1745,6 +1748,20 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             return null;
         }
         return Long.valueOf(s);
+    }
+
+    /**
+     * 车友在这条线路上已经一个协议都没了 → 线路别名也清掉(取消分配、删协议、重启清理一个口径;
+     * 不然以后再给他分配同一台机器 × 落地的协议,旧别名会冒出来)。吞异常,不影响原操作。
+     */
+    private void clearLineAliasIfEmpty(Long userId, Long nodeId, Long landingId) {
+        try {
+            if (userId != null && nodeId != null && lineInboundUsers(userId, nodeId, landingId).isEmpty()) {
+                nodeNameStore.deleteUserLine(userId, SubNames.lineKey(nodeId, landingId));
+            }
+        } catch (Exception e) {
+            log.warn("清线路别名失败(不影响原操作): " + e.getMessage());
+        }
     }
 
     /** 该车友在这条线路(机器 × 落地)下的所有协议分配记录 */
