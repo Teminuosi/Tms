@@ -93,11 +93,16 @@ class NodeIpv6SwitchTest {
     }
 
     static Forward fwd(long id, int uid, int port) {
+        return fwd(id, uid, port, 1);
+    }
+
+    static Forward fwd(long id, int uid, int port, Integer status) {
         Forward f = new Forward();
         f.setId(id);
         f.setUserId(uid);
         f.setInPort(port);
         f.setTunnelId(3);
+        f.setStatus(status);
         return f;
     }
 
@@ -185,7 +190,7 @@ class NodeIpv6SwitchTest {
     void notFoundEverywhereIsSkippedAndListed() {
         Fake f = online();
         f.forwards.add(fwd(5, 2, 20001));
-        f.forwards.add(fwd(50, 1, 20050));
+        f.forwards.add(fwd(50, 1, 20050, -1));
         f.userTunnel.put(1, 4);
         f.present = new HashSet<>(Arrays.asList("5_2_0_tcp", "5_2_0_udp"));
         R r = new NodeIpv6Switch(f).enable(7L);
@@ -204,12 +209,38 @@ class NodeIpv6SwitchTest {
     @Test
     void allNotFoundStillCommits() {
         Fake f = online();
-        f.forwards.add(fwd(50, 1, 20050));
+        f.forwards.add(fwd(50, 1, 20050, -1));
+        f.forwards.add(fwd(51, 1, 20051, null));
+        f.forwards.add(fwd(52, 1, 20052, 0));
         f.present = Collections.emptySet();
         R r = new NodeIpv6Switch(f).disable(7L);
         assertEquals(0, r.getCode(), r.getMsg());
         assertArrayEquals(new Object[]{3L, "0.0.0.0", 7L, 0}, f.commits.get(0));
-        assertEquals(1, ((JSONObject) r.getData()).getJSONArray("skipped").size());
+        assertEquals(3, ((JSONObject) r.getData()).getJSONArray("skipped").size());
+    }
+
+    /**
+     * 库里是运行中(status=1)但原名和 _0 节点上都找不到:不是老版本留下的坏转发,是名字对不上,
+     * 照样算失败、整体回滚(已切的切回、库不动),报错点名是哪条、为什么
+     */
+    @Test
+    void runningForwardNotFoundAnywhereFailsAndRollsBack() {
+        Fake f = online();
+        f.forwards.add(fwd(5, 2, 20001));
+        f.forwards.add(fwd(60, 1, 20060));          // status=1
+        f.forwards.add(fwd(50, 1, 20050, -1));      // 老版本留下的,照旧跳过
+        f.userTunnel.put(1, 4);
+        f.present = new HashSet<>(Arrays.asList("5_2_0_tcp", "5_2_0_udp"));
+        R r = new NodeIpv6Switch(f).enable(7L);
+        assertNotEquals(0, r.getCode());
+        assertTrue(f.commits.isEmpty());
+        assertTrue(r.getMsg().contains("#60") && r.getMsg().contains("20060"), r.getMsg());
+        assertTrue(r.getMsg().contains("60_1_4") && r.getMsg().contains("60_1_0"), r.getMsg());
+        assertTrue(r.getMsg().contains("名字对不上"), r.getMsg());
+        assertFalse(r.getMsg().contains("#50"), r.getMsg());
+        assertTrue(r.getMsg().contains("已把切过去的 2 条切回原地址"), r.getMsg());
+        assertEquals(3, f.sent.size());
+        assertEquals(Arrays.asList("5_2_0_tcp=0.0.0.0:20001", "5_2_0_udp=0.0.0.0:20001"), items(f.sent.get(2)));
     }
 
     /** 有不存在的也有真失败:真失败仍整体回滚,不存在的那条不当失败、也不发切回 */
@@ -218,7 +249,7 @@ class NodeIpv6SwitchTest {
         Fake f = online();
         f.forwards.add(fwd(5, 2, 20001));
         f.forwards.add(fwd(6, 3, 20002));
-        f.forwards.add(fwd(50, 1, 20050));
+        f.forwards.add(fwd(50, 1, 20050, -1));
         f.present = new HashSet<>(Arrays.asList("5_2_0_tcp", "5_2_0_udp", "6_3_0_tcp", "6_3_0_udp"));
         f.nodeErr = n -> n.equals("6_3_0_tcp") ? "listen tcp6 [::]:20002: bind: address already in use" : null;
         R r = new NodeIpv6Switch(f).enable(7L);

@@ -119,8 +119,9 @@ class SubIpv6DualTest {
                     }
                     assertEquals(java.util.Collections.singletonList(only), links(p, node(1, 1, V6), us, t), p);
                 }
-                // tcp [::]、udp 0.0.0.0:TCP 类协议出 v6,UDP 类不出
-                assertEquals(udpProto ? 1 : 2, links(p, node(1, 1, V6), us, tun("[::]", "0.0.0.0")).size(), p);
+                // tcp [::]、udp 0.0.0.0:只走 TCP 的协议出 v6;UDP 类不出;ss(TCP+UDP 都用)也不出
+                boolean bothProto = "shadowsocks".equals(p);
+                assertEquals(udpProto || bothProto ? 1 : 2, links(p, node(1, 1, V6), us, tun("[::]", "0.0.0.0")).size(), p);
                 assertEquals(udpProto ? 2 : 1, links(p, node(1, 1, V6), us, tun("0.0.0.0", " [::] ")).size(), p);
             }
         }
@@ -133,6 +134,38 @@ class SubIpv6DualTest {
         assertEquals(3, half.size());
         assertEquals(V6, half.get(1).get("server"));
         assertEquals("vless", half.get(1).get("type"));
+    }
+
+    /**
+     * 按协议实际用到的传输看监听:ss 客户端 TCP 和 UDP 都直连这个端口,两边都得是 [::] 才出 v6
+     * (只有 TCP 是 [::] 时 v6 那条 UDP 不通);hysteria2 / tuic 只看 UDP;vless / vmess / trojan / anytls 只看 TCP。
+     */
+    @Test
+    void listensV6ByTransportsTheProtocolUses() {
+        Tunnel both = tun("[::]", "[::]"), tcpOnly = tun("[::]", "0.0.0.0"), udpOnly = tun("0.0.0.0", "[::]");
+        assertTrue(InboundServiceImpl.listensV6(inbound("shadowsocks"), both));
+        assertFalse(InboundServiceImpl.listensV6(inbound("shadowsocks"), tcpOnly));
+        assertFalse(InboundServiceImpl.listensV6(inbound("shadowsocks"), udpOnly));
+        assertFalse(InboundServiceImpl.listensV6(inbound("shadowsocks"), tun("[::]", null)));
+        for (String p : new String[]{"hysteria2", "tuic"}) {
+            assertTrue(InboundServiceImpl.listensV6(inbound(p), udpOnly), p);
+            assertFalse(InboundServiceImpl.listensV6(inbound(p), tcpOnly), p);
+        }
+        for (String p : new String[]{"vless", "vmess", "trojan", "anytls"}) {
+            assertTrue(InboundServiceImpl.listensV6(inbound(p), tcpOnly), p);
+            assertFalse(InboundServiceImpl.listensV6(inbound(p), udpOnly), p);
+        }
+        for (String p : PROTOS) {
+            assertTrue(InboundServiceImpl.listensV6(inbound(p), both), p);
+        }
+        // 链接 / Clash:ss 半双栈不出 v6,和关着时逐字节一样
+        String ssOff = oldLink("shadowsocks", "203.0.113.5", nm("shadowsocks", false).text, false);
+        assertEquals(java.util.Collections.singletonList(ssOff), links("shadowsocks", node(1, 1, V6), false, tcpOnly));
+        assertEquals(2, links("shadowsocks", node(1, 1, V6), false, both).size());
+        String[] ss = {"shadowsocks"};
+        assertEquals(ClashUtil.buildConfig(clash(node(null, null, null), DUAL, ss)),
+                ClashUtil.buildConfig(clash(node(1, 1, V6), tcpOnly, ss)));
+        assertEquals(2, clash(node(1, 1, V6), both, ss).size());
     }
 
     @Test

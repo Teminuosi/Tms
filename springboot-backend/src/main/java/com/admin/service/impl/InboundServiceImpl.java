@@ -1063,15 +1063,25 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     /**
      * 这条协议的转发实际在不在听 IPv6:看转发所在隧道的监听地址是不是 [::](GostUtil.listenAddr 只认这个写法)。
      * 节点开关只切自动隧道;老版本可能把协议转发落进车主手建的隧道,开启后也可能在隧道页被改回 0.0.0.0,
-     * 这些转发出 v6 那条只会连不上。hysteria2 / tuic 走 UDP 看 udp_listen_addr,其他看 tcp_listen_addr。
+     * 这些转发出 v6 那条只会连不上。按协议实际用到的传输看:hysteria2 / tuic 只走 UDP 看 udp_listen_addr;
+     * shadowsocks 的 TCP 和 UDP 都直连这个端口(sing-box 入站不限 network,Clash 里 udp: true),两个都得是 [::];
+     * vless / vmess / trojan / anytls 的 UDP 走在 TCP 连接里,只看 tcp_listen_addr。
      */
     static boolean listensV6(Inbound in, Tunnel tunnel) {
         if (tunnel == null) {
             return false;
         }
         String p = in == null ? null : in.getProtocol();
-        String addr = ("hysteria2".equalsIgnoreCase(p) || "tuic".equalsIgnoreCase(p))
-                ? tunnel.getUdpListenAddr() : tunnel.getTcpListenAddr();
+        if ("hysteria2".equalsIgnoreCase(p) || "tuic".equalsIgnoreCase(p)) {
+            return isDualStackListen(tunnel.getUdpListenAddr());
+        }
+        if ("shadowsocks".equalsIgnoreCase(p)) {
+            return isDualStackListen(tunnel.getTcpListenAddr()) && isDualStackListen(tunnel.getUdpListenAddr());
+        }
+        return isDualStackListen(tunnel.getTcpListenAddr());
+    }
+
+    private static boolean isDualStackListen(String addr) {
         return addr != null && DUAL_STACK_LISTEN.equals(addr.trim());
     }
 
@@ -2014,7 +2024,11 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         // S-UI 的能通」(S-UI 监听 ::)(2026-10-28)。
         // 只对「节点地址是 IPv6」的机器改成 [::](双栈):IPv4 机器一个字节都不变 —— 有的 VPS 关了 IPv6,
         // 那里绑 [::] 会失败,不能动老用户。IPv6 机器上原来就不通,改了不会影响正在用的人。
-        boolean v6Node = isIpv6Node(nodeId);
+        // 【车主在客户端开了 IPv6(ipv6_dual=1)】同样用 [::]:开启时这台还没有自动隧道的话,开关只记了 ipv6_dual,
+        // 之后分配协议新建的隧道若还是 0.0.0.0,新协议只听 IPv4,卡片却显示已开启(2026-11-03 复验)。
+        // [::] 下发给节点是 ":端口"(GostUtil.listenAddr),和开关切过去的地址同一个写法;老节点程序也认
+        // (":端口" 不是 IPv4 写法 → tcp/udp 双栈,机器没 IPv6 时 Go 自动回落 IPv4)。关闭 IPv6 后 ipv6_dual=0,照旧 0.0.0.0。
+        boolean v6Node = listensDualStack(nodeId);
         if (tunnel != null) {
             if (v6Node) {
                 tunnel = upgradeTunnelToDualStack(tunnel);
@@ -2046,10 +2060,14 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     /** IPv6 机器上转发要监听的地址:[::] 让 gost 用双栈 tcp/udp(还能顺带收 IPv4) */
     private static final String DUAL_STACK_LISTEN = "[::]";
 
-    /** 节点登记的地址是 IPv6 字面量 = 这是台 IPv6 机器 */
-    private boolean isIpv6Node(Long nodeId) {
+    /** 新建 / 空的自动隧道要不要听 [::]:节点登记的地址是 IPv6 字面量(IPv6 机器),或车主开了 IPv6(ipv6_dual=1) */
+    private boolean listensDualStack(Long nodeId) {
         Node node = nodeMapper.selectById(nodeId);
-        return node != null && SingboxUtil.isIpv6Literal(node.getServerIp() == null ? null : node.getServerIp().trim());
+        if (node == null) {
+            return false;
+        }
+        return SingboxUtil.isIpv6Literal(node.getServerIp() == null ? null : node.getServerIp().trim())
+                || Integer.valueOf(1).equals(node.getIpv6Dual());
     }
 
     /**

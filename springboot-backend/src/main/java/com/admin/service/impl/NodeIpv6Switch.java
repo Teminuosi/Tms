@@ -101,13 +101,15 @@ public class NodeIpv6Switch {
         final String proto;
         final int listenPort;
         final Long forwardId;
+        final Integer status;           // 转发在库里的状态(1=运行中)
         int idx;                        // 当前用的是第几个候选
 
-        Item(List<String> candidates, String proto, int listenPort, Long forwardId) {
+        Item(List<String> candidates, String proto, int listenPort, Long forwardId, Integer status) {
             this.candidates = candidates;
             this.proto = proto;
             this.listenPort = listenPort;
             this.forwardId = forwardId;
+            this.status = status;
         }
 
         String name() {
@@ -169,8 +171,8 @@ public class NodeIpv6Switch {
             }
             List<String> names = GostDeleteFallback.candidateNames(f.getId(), f.getUserId(),
                     p.userTunnelId(f.getUserId(), tunnel.getId()));
-            items.add(new Item(names, "tcp", f.getInPort(), f.getId()));
-            items.add(new Item(names, "udp", f.getInPort(), f.getId()));
+            items.add(new Item(names, "tcp", f.getInPort(), f.getId(), f.getStatus()));
+            items.add(new Item(names, "udp", f.getInPort(), f.getId(), f.getStatus()));
         }
         if (items.isEmpty()) {
             p.commit(tunnel.getId(), host, nodeId, dual);
@@ -180,7 +182,7 @@ public class NodeIpv6Switch {
         List<Item> switched = new ArrayList<>();   // 确认已切过去的
         List<Item> uncertain = new ArrayList<>();  // 发了但没拿到结果的(超时等),回滚时一并切回
         Map<Item, String> failed = new LinkedHashMap<>();
-        // 原名和 _0 节点上都没有的(老版本留下的 status=-1 转发等):节点上本来就没有这个监听,
+        // 原名和 _0 节点上都没有、库里也不是运行中(status != 1)的(老版本留下的 status=-1 转发等):节点上本来就没有这个监听,
         // 不用切,也不算失败;以后重新下发时按隧道的监听地址生成。按转发去重,只用来提示
         Map<Long, String> skipped = new LinkedHashMap<>();
 
@@ -212,6 +214,11 @@ public class NodeIpv6Switch {
                     if (it.idx + 1 < it.candidates.size()) {
                         it.idx++;
                         next.add(it);
+                    } else if (Integer.valueOf(1).equals(it.status)) {
+                        // 库里是运行中,节点上却按哪个名字都找不到:不是老版本留下的坏转发,是名字对不上,
+                        // 照样算失败、整体回滚,别悄悄跳过
+                        failed.put(it, "转发 #" + it.forwardId + "(端口 " + it.listenPort + ")库里是运行中,但节点上按 "
+                                + String.join(" / ", it.candidates) + " 都找不到这个服务(名字对不上),没法切换");
                     } else {
                         skipped.putIfAbsent(it.forwardId, "转发 #" + it.forwardId + "(端口 " + it.listenPort
                                 + "):节点上没有这条转发的服务(" + String.join(" / ", it.candidates)
