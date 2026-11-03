@@ -7,6 +7,7 @@ import com.admin.entity.Forward;
 import com.admin.entity.Inbound;
 import com.admin.entity.InboundUser;
 import com.admin.entity.Node;
+import com.admin.entity.Tunnel;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -58,6 +59,16 @@ class SubIpv6DualTest {
         return f;
     }
 
+    static Tunnel tun(String tcp, String udp) {
+        Tunnel t = new Tunnel();
+        t.setTcpListenAddr(tcp);
+        t.setUdpListenAddr(udp);
+        return t;
+    }
+
+    /** 转发所在隧道在听 IPv6(自动隧道开过 IPv6 / 新建时就是 [::]) */
+    static final Tunnel DUAL = tun("[::]", "[::]");
+
     static SubNames.Name nm(String proto, boolean userSet) {
         return SubNames.resolve(proto, null, "机A", null, false, true, null, userSet ? "我的 节点" : null);
     }
@@ -81,9 +92,47 @@ class SubIpv6DualTest {
     }
 
     static List<String> links(String proto, Node n, boolean userSet) {
+        return links(proto, n, userSet, DUAL);
+    }
+
+    static List<String> links(String proto, Node n, boolean userSet, Tunnel t) {
         List<String> out = new ArrayList<>();
-        InboundServiceImpl.addSubLinks(out, inbound(proto), iu(), n, fwd(), nm(proto, userSet));
+        InboundServiceImpl.addSubLinks(out, inbound(proto), iu(), n, fwd(), nm(proto, userSet), t);
         return out;
+    }
+
+    /**
+     * 节点开关开着,但这条协议的转发不在听 IPv6(老版本把转发落进了车主手建的隧道,
+     * 或开启后又在隧道页把监听改回 0.0.0.0):不出 v6 那条,和关着时逐字节一样。
+     * hysteria2 / tuic 走 UDP,看 udp_listen_addr;其他看 tcp_listen_addr。
+     */
+    @Test
+    void noV6LinkWhenForwardNotListeningOnV6() {
+        Tunnel[] notV6 = {null, tun("0.0.0.0", "0.0.0.0"), tun(null, null), tun("1.2.3.4", "[::]")};
+        for (String p : PROTOS) {
+            boolean udpProto = "hysteria2".equals(p) || "tuic".equals(p);
+            for (boolean us : new boolean[]{false, true}) {
+                String only = oldLink(p, "203.0.113.5", nm(p, us).text, us);
+                for (Tunnel t : notV6) {
+                    if (udpProto && t != null && "[::]".equals(t.getUdpListenAddr())) {
+                        continue;
+                    }
+                    assertEquals(java.util.Collections.singletonList(only), links(p, node(1, 1, V6), us, t), p);
+                }
+                // tcp [::]、udp 0.0.0.0:TCP 类协议出 v6,UDP 类不出
+                assertEquals(udpProto ? 1 : 2, links(p, node(1, 1, V6), us, tun("[::]", "0.0.0.0")).size(), p);
+                assertEquals(udpProto ? 2 : 1, links(p, node(1, 1, V6), us, tun("0.0.0.0", " [::] ")).size(), p);
+            }
+        }
+        // Clash 同理
+        String[] ps = {"vless", "hysteria2"};
+        String off = ClashUtil.buildConfig(clash(node(null, null, null), DUAL, ps));
+        assertEquals(off, ClashUtil.buildConfig(clash(node(1, 1, V6), tun("0.0.0.0", "0.0.0.0"), ps)));
+        assertEquals(off, ClashUtil.buildConfig(clash(node(1, 1, V6), null, ps)));
+        List<Map<String, Object>> half = clash(node(1, 1, V6), tun("[::]", "0.0.0.0"), ps);
+        assertEquals(3, half.size());
+        assertEquals(V6, half.get(1).get("server"));
+        assertEquals("vless", half.get(1).get("type"));
     }
 
     @Test
@@ -124,10 +173,14 @@ class SubIpv6DualTest {
     }
 
     static List<Map<String, Object>> clash(Node n, String... protos) {
+        return clash(n, DUAL, protos);
+    }
+
+    static List<Map<String, Object>> clash(Node n, Tunnel t, String... protos) {
         List<Map<String, Object>> proxies = new ArrayList<>();
         Set<String> used = ClashUtil.newNameSet();
         for (String p : protos) {
-            InboundServiceImpl.addClashProxies(proxies, used, inbound(p), iu(), n, fwd(), nm(p, false).text);
+            InboundServiceImpl.addClashProxies(proxies, used, inbound(p), iu(), n, fwd(), nm(p, false).text, t);
         }
         return proxies;
     }
@@ -164,7 +217,7 @@ class SubIpv6DualTest {
         Set<String> used = ClashUtil.newNameSet();
         List<Runnable> pending = new ArrayList<>();
         for (Object[] r : rows) {
-            InboundServiceImpl.addClashProxies(proxies, used, inbound("vless"), iu(), (Node) r[0], fwd(), (String) r[1], pending);
+            InboundServiceImpl.addClashProxies(proxies, used, inbound("vless"), iu(), (Node) r[0], fwd(), (String) r[1], DUAL, pending);
         }
         pending.forEach(Runnable::run);
         return proxies;

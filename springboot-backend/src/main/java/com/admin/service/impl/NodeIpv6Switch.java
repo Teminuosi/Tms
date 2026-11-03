@@ -46,6 +46,7 @@ public class NodeIpv6Switch {
     public interface Port {
         Node node(Long nodeId);
 
+        /** 节点这次连上以后上报的 caps;还没收到上报(面板刚重启 / 节点刚连上)返回 null */
         List<String> caps(Long nodeId);
 
         /** 节点上报的公网 IPv6(WebSocketServer.nodeV6Addrs) */
@@ -99,12 +100,14 @@ public class NodeIpv6Switch {
         final List<String> candidates; // 服务名基名候选:原名在前,_0 在后(同 GostDeleteFallback)
         final String proto;
         final int listenPort;
+        final Long forwardId;
         int idx;                        // 当前用的是第几个候选
 
-        Item(List<String> candidates, String proto, int listenPort) {
+        Item(List<String> candidates, String proto, int listenPort, Long forwardId) {
             this.candidates = candidates;
             this.proto = proto;
             this.listenPort = listenPort;
+            this.forwardId = forwardId;
         }
 
         String name() {
@@ -124,7 +127,11 @@ public class NodeIpv6Switch {
         if (node.getStatus() == null || node.getStatus() != 1) {
             return R.err("节点不在线");
         }
-        if (!p.caps(nodeId).contains(CAP)) {
+        List<String> caps = p.caps(nodeId);
+        if (caps == null) {
+            return R.err("还没收到这台节点的上报(面板刚重启或节点刚连上),等十几秒刷新页面再试");
+        }
+        if (!caps.contains(CAP)) {
             return R.err("节点程序太旧,先升级节点程序");
         }
         if (!enable) {
@@ -162,8 +169,8 @@ public class NodeIpv6Switch {
             }
             List<String> names = GostDeleteFallback.candidateNames(f.getId(), f.getUserId(),
                     p.userTunnelId(f.getUserId(), tunnel.getId()));
-            items.add(new Item(names, "tcp", f.getInPort()));
-            items.add(new Item(names, "udp", f.getInPort()));
+            items.add(new Item(names, "tcp", f.getInPort(), f.getId()));
+            items.add(new Item(names, "udp", f.getInPort(), f.getId()));
         }
         if (items.isEmpty()) {
             p.commit(tunnel.getId(), host, nodeId, dual);
@@ -173,16 +180,25 @@ public class NodeIpv6Switch {
         List<Item> switched = new ArrayList<>();   // 确认已切过去的
         List<Item> uncertain = new ArrayList<>();  // 发了但没拿到结果的(超时等),回滚时一并切回
         Map<Item, String> failed = new LinkedHashMap<>();
+        // 原名和 _0 节点上都没有的(老版本留下的 status=-1 转发等):节点上本来就没有这个监听,
+        // 不用切,也不算失败;以后重新下发时按隧道的监听地址生成。按转发去重,只用来提示
+        Map<Long, String> skipped = new LinkedHashMap<>();
 
         // 第一轮按原名;只有节点回「原名 not found」且还有候选名(_0)的,第二轮换名再发(同 firstFound)
         List<Item> round = items;
         String[] why = new String[1];
         while (!round.isEmpty()) {
             Map<String, JSONObject> res = sendRound(p, nodeId, round, enable, why);
+            // 节点明确不认这个命令(老节点程序):整条没执行,不是「没拿到结果」,不用切回
+            boolean rejected = res == null && why[0] != null && why[0].startsWith("未知命令类型");
             List<Item> next = new ArrayList<>();
             for (Item it : round) {
                 JSONObject r = res == null ? null : res.get(it.name());
                 if (r == null) {
+                    if (rejected) {
+                        failed.put(it, "节点程序太旧,不认切换命令,先升级节点程序");
+                        continue;
+                    }
                     uncertain.add(it);
                     failed.put(it, res == null ? why[0] : "节点没回这一条的结果");
                     continue;
@@ -192,9 +208,15 @@ public class NodeIpv6Switch {
                     continue;
                 }
                 String err = r.getString("error");
-                if (("service " + it.name() + " not found").equals(err) && it.idx + 1 < it.candidates.size()) {
-                    it.idx++;
-                    next.add(it);
+                if (("service " + it.name() + " not found").equals(err)) {
+                    if (it.idx + 1 < it.candidates.size()) {
+                        it.idx++;
+                        next.add(it);
+                    } else {
+                        skipped.putIfAbsent(it.forwardId, "转发 #" + it.forwardId + "(端口 " + it.listenPort
+                                + "):节点上没有这条转发的服务(" + String.join(" / ", it.candidates)
+                                + " 都没找到),不用切;以后重新下发时会按新的监听地址生成");
+                    }
                     continue;
                 }
                 failed.put(it, err);
@@ -204,13 +226,20 @@ public class NodeIpv6Switch {
 
         if (failed.isEmpty()) {
             p.commit(tunnel.getId(), host, nodeId, dual);
-            return R.ok();
+            if (skipped.isEmpty()) {
+                return R.ok();
+            }
+            JSONObject data = new JSONObject();
+            data.put("skipped", new ArrayList<>(skipped.values()));
+            return R.ok(data);
         }
 
         // 回滚:已切过去的(以及没拿到结果的)切回原来的地址,库不动
         List<Item> back = new ArrayList<>(switched);
         back.addAll(uncertain);
         String rollbackErr = null;
+        int switchedBack = 0;   // 确认切过去、又确认切回来的
+        int uncertainBack = 0;  // 没拿到结果、切回时确认在原地址的
         if (!back.isEmpty()) {
             Map<String, JSONObject> rb = sendRound(p, nodeId, back, !enable, why);
             List<String> bad = new ArrayList<>();
@@ -223,7 +252,13 @@ public class NodeIpv6Switch {
                     // 没拿到结果的那条:本来没切过去的,切回时节点回 ok(地址没变);回 not found 说明节点上本来就没有,不算切回失败
                     if (!uncertain.contains(it) || !("service " + it.name() + " not found").equals(e)) {
                         bad.add(it.name() + "(" + zh(it, e) + ")");
+                    } else {
+                        uncertainBack++;
                     }
+                } else if (uncertain.contains(it)) {
+                    uncertainBack++;
+                } else {
+                    switchedBack++;
                 }
             }
             if (!bad.isEmpty()) {
@@ -232,7 +267,16 @@ public class NodeIpv6Switch {
         }
 
         StringBuilder sb = new StringBuilder(enable ? "开启 IPv6 双栈失败" : "关闭 IPv6 双栈失败");
-        sb.append(back.isEmpty() ? ",节点上没有改动" : ",已把切过去的 " + back.size() + " 条切回原地址");
+        // 只说确认过的事:一条都没切回成功时别说「已切回」
+        if (back.isEmpty() || (switched.isEmpty() && uncertainBack == uncertain.size())) {
+            sb.append(",节点上没有改动");
+        } else if (switchedBack > 0) {
+            sb.append(",已把切过去的 ").append(switchedBack).append(" 条切回原地址");
+        } else if (switched.isEmpty()) {
+            sb.append(",节点没回结果,不确定节点上有没有改动");
+        } else {
+            sb.append(",切过去的 ").append(switched.size()).append(" 条没能切回");
+        }
         sb.append(",设置没保存。失败的:");
         List<String> parts = new ArrayList<>();
         for (Map.Entry<Item, String> e : failed.entrySet()) {
@@ -324,7 +368,7 @@ public class NodeIpv6Switch {
 
         @Override
         public List<String> caps(Long nodeId) {
-            return WebSocketServer.nodeCaps(nodeId);
+            return WebSocketServer.capsReported(nodeId) ? WebSocketServer.nodeCaps(nodeId) : null;
         }
 
         @Override

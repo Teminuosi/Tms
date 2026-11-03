@@ -31,6 +31,8 @@ class NodeIpv6SwitchTest {
         /** 节点上实际有的服务;null 表示都有 */
         Set<String> present;
         boolean timeout;
+        /** 非 null:节点对整条命令只回这个错误、不带 results(老节点程序不认命令时就是这样) */
+        String wholeErr;
         List<JSONObject> sent = new ArrayList<>();
         List<Object[]> commits = new ArrayList<>();
 
@@ -47,6 +49,10 @@ class NodeIpv6SwitchTest {
             GostDto r = new GostDto();
             if (timeout && sent.size() == 1) {
                 r.setMsg("等待响应超时");
+                return r;
+            }
+            if (wholeErr != null) {
+                r.setMsg(wholeErr);
                 return r;
             }
             JSONArray res = new JSONArray();
@@ -174,17 +180,108 @@ class NodeIpv6SwitchTest {
         assertEquals(1, f.commits.size());
     }
 
+    /** 原名和 _0 节点上都没有(老版本留下的 status=-1 转发):不用切,跳过并列出来,不拖累整台 */
     @Test
-    void notFoundEverywhereFailsAndRollsBack() {
+    void notFoundEverywhereIsSkippedAndListed() {
+        Fake f = online();
+        f.forwards.add(fwd(5, 2, 20001));
+        f.forwards.add(fwd(50, 1, 20050));
+        f.userTunnel.put(1, 4);
+        f.present = new HashSet<>(Arrays.asList("5_2_0_tcp", "5_2_0_udp"));
+        R r = new NodeIpv6Switch(f).enable(7L);
+        assertEquals(0, r.getCode(), r.getMsg());
+        assertEquals(2, f.sent.size());
+        assertEquals(Arrays.asList("5_2_0_tcp=:20001", "5_2_0_udp=:20001", "50_1_4_tcp=:20050", "50_1_4_udp=:20050"),
+                items(f.sent.get(0)));
+        assertEquals(Arrays.asList("50_1_0_tcp=:20050", "50_1_0_udp=:20050"), items(f.sent.get(1)));
+        assertArrayEquals(new Object[]{3L, "[::]", 7L, 1}, f.commits.get(0));
+        JSONObject d = (JSONObject) r.getData();
+        List<String> skipped = d.getJSONArray("skipped").toJavaList(String.class);
+        assertEquals(1, skipped.size(), skipped.toString());
+        assertTrue(skipped.get(0).contains("#50") && skipped.get(0).contains("20050"), skipped.get(0));
+    }
+
+    @Test
+    void allNotFoundStillCommits() {
+        Fake f = online();
+        f.forwards.add(fwd(50, 1, 20050));
+        f.present = Collections.emptySet();
+        R r = new NodeIpv6Switch(f).disable(7L);
+        assertEquals(0, r.getCode(), r.getMsg());
+        assertArrayEquals(new Object[]{3L, "0.0.0.0", 7L, 0}, f.commits.get(0));
+        assertEquals(1, ((JSONObject) r.getData()).getJSONArray("skipped").size());
+    }
+
+    /** 有不存在的也有真失败:真失败仍整体回滚,不存在的那条不当失败、也不发切回 */
+    @Test
+    void notFoundPlusRealFailureStillRollsBack() {
         Fake f = online();
         f.forwards.add(fwd(5, 2, 20001));
         f.forwards.add(fwd(6, 3, 20002));
-        f.present = new HashSet<>(Arrays.asList("6_3_0_tcp", "6_3_0_udp"));
+        f.forwards.add(fwd(50, 1, 20050));
+        f.present = new HashSet<>(Arrays.asList("5_2_0_tcp", "5_2_0_udp", "6_3_0_tcp", "6_3_0_udp"));
+        f.nodeErr = n -> n.equals("6_3_0_tcp") ? "listen tcp6 [::]:20002: bind: address already in use" : null;
         R r = new NodeIpv6Switch(f).enable(7L);
         assertNotEquals(0, r.getCode());
-        assertTrue(r.getMsg().contains("节点上没有这个服务"), r.getMsg());
-        assertEquals(Arrays.asList("6_3_0_tcp=0.0.0.0:20002", "6_3_0_udp=0.0.0.0:20002"), items(f.sent.get(1)));
+        assertTrue(r.getMsg().contains("6_3_0_tcp"), r.getMsg());
+        assertFalse(r.getMsg().contains("50_1"), r.getMsg());
+        assertEquals(2, f.sent.size());
+        assertEquals(Arrays.asList("5_2_0_tcp=0.0.0.0:20001", "5_2_0_udp=0.0.0.0:20001", "6_3_0_udp=0.0.0.0:20002"),
+                items(f.sent.get(1)));
         assertTrue(f.commits.isEmpty());
+    }
+
+    /** 面板还没收到这台节点的上报(刚重启 / 节点刚连上):不当成「太旧」 */
+    @Test
+    void capsNotReportedYetIsNotCalledOld() {
+        Fake f = online();
+        f.caps = null;
+        f.forwards.add(fwd(5, 2, 20001));
+        R r = new NodeIpv6Switch(f).enable(7L);
+        assertNotEquals(0, r.getCode());
+        assertFalse(r.getMsg().contains("太旧"), r.getMsg());
+        assertTrue(r.getMsg().contains("上报"), r.getMsg());
+        assertTrue(f.sent.isEmpty());
+        assertTrue(f.commits.isEmpty());
+    }
+
+    /** 节点不认命令(老节点程序):什么都没切,别说「已切回」,也不再发切回 */
+    @Test
+    void unknownCommandSaysNothingSwitched() {
+        Fake f = online();
+        f.forwards.add(fwd(5, 2, 20001));
+        f.wholeErr = "未知命令类型: SwitchServiceAddr";
+        R r = new NodeIpv6Switch(f).enable(7L);
+        assertNotEquals(0, r.getCode());
+        assertFalse(r.getMsg().contains("切回"), r.getMsg());
+        assertTrue(r.getMsg().contains("没有改动"), r.getMsg());
+        assertTrue(r.getMsg().contains("太旧"), r.getMsg());
+        assertEquals(1, f.sent.size());
+        assertTrue(f.commits.isEmpty());
+    }
+
+    /** 没拿到结果、切回也没拿到结果:不能说「已切回」 */
+    @Test
+    void noResultEitherWayDoesNotClaimRolledBack() {
+        Fake f = online();
+        f.forwards.add(fwd(5, 2, 20001));
+        f.wholeErr = "等待响应超时";
+        R r = new NodeIpv6Switch(f).enable(7L);
+        assertNotEquals(0, r.getCode());
+        assertFalse(r.getMsg().contains("已把"), r.getMsg());
+        assertTrue(r.getMsg().contains("不确定"), r.getMsg());
+        assertTrue(f.commits.isEmpty());
+    }
+
+    /** 切过去的切回成功:照旧说已切回 N 条(N = 真切过去的条数) */
+    @Test
+    void rollbackMessageCountsOnlyConfirmedSwitched() {
+        Fake f = online();
+        f.forwards.add(fwd(5, 2, 20001));
+        f.forwards.add(fwd(6, 3, 20002));
+        f.nodeErr = n -> n.equals("6_3_0_udp") ? "boom" : null;
+        R r = new NodeIpv6Switch(f).enable(7L);
+        assertTrue(r.getMsg().contains("已把切过去的 3 条切回原地址"), r.getMsg());
     }
 
     @Test

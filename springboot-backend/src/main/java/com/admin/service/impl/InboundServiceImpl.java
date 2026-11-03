@@ -762,6 +762,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         java.util.Map<String, Boolean> lineStopped = new HashMap<>();
         java.util.Map<Long, Node> nodeCache = new HashMap<>();
         java.util.Map<Long, String> landingNames = new HashMap<>();
+        java.util.Map<Integer, java.util.Optional<Tunnel>> tunnelCache = new HashMap<>();
         SubNames.UserNames names = nodeNameStore.load(u.getId());
 
         for (InboundUser iu : ius) {
@@ -801,7 +802,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             SubNames.Name nm = SubNames.resolve(in.getProtocol(), in.getRemark(), node.getName(), ln,
                     lid != null, true, names.line(in.getNodeId(), lid), names.inbound(in.getId()));
 
-            addSubLinks(links, in, iu, node, forward, nm);
+            addSubLinks(links, in, iu, node, forward, nm, subTunnel(node, forward, tunnelCache));
         }
         // 【转发】分给该车友的转发也进这条聚合订阅。
         // 为什么只在聚合订阅里出现:转发不属于任何一条"线路"(线路 = 机器 × 落地组),
@@ -863,6 +864,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         java.util.Map<Long, Node> nodeCache = new HashMap<>();
         java.util.Map<Long, String> landingNames = new HashMap<>();
         java.util.Map<Long, SubNames.UserNames> namesByUser = new HashMap<>();
+        java.util.Map<Integer, java.util.Optional<Tunnel>> tunnelCache = new HashMap<>();
 
         for (InboundUser iu : ius) {
             if (iu.getStatus() != null && iu.getStatus() == 0) {
@@ -903,7 +905,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             String remark = SubNames.resolve(in.getProtocol(), in.getRemark(), node.getName(), ln,
                     lid != null, aggUser != null, names.line(in.getNodeId(), lid), names.inbound(in.getId())).text;
 
-            addClashProxies(proxies, usedNames, in, iu, node, forward, remark, pendingV6);
+            addClashProxies(proxies, usedNames, in, iu, node, forward, remark,
+                    subTunnel(node, forward, tunnelCache), pendingV6);
         }
         pendingV6.forEach(Runnable::run);
         if (proxies.isEmpty()) {
@@ -921,9 +924,9 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
 
     /** Clash 一条入站:正常那条;双栈都出时紧跟一条 server=裸 IPv6、名字带「 v6」的(分组由 buildConfig 按 proxies 全量生成) */
     static void addClashProxies(List<java.util.Map<String, Object>> proxies, java.util.Set<String> usedNames,
-                                Inbound in, InboundUser iu, Node node, Forward forward, String remark) {
+                                Inbound in, InboundUser iu, Node node, Forward forward, String remark, Tunnel tunnel) {
         List<Runnable> pendingV6 = new java.util.ArrayList<>();
-        addClashProxies(proxies, usedNames, in, iu, node, forward, remark, pendingV6);
+        addClashProxies(proxies, usedNames, in, iu, node, forward, remark, tunnel, pendingV6);
         pendingV6.forEach(Runnable::run);
     }
 
@@ -934,13 +937,13 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
      */
     static void addClashProxies(List<java.util.Map<String, Object>> proxies, java.util.Set<String> usedNames,
                                 Inbound in, InboundUser iu, Node node, Forward forward, String remark,
-                                List<Runnable> pendingV6) {
+                                Tunnel tunnel, List<Runnable> pendingV6) {
         java.util.Map<String, Object> proxy = clashProxy(ClashUtil.uniqueName(remark, usedNames), in, iu, linkHost(node), forward);
         if (proxy == null) {
             return;
         }
         proxies.add(proxy);
-        String v6 = dualV6Host(node);
+        String v6 = listensV6(in, tunnel) ? dualV6Host(node) : null;
         if (v6 != null) {
             pendingV6.add(() -> {
                 java.util.Map<String, Object> p6 = clashProxy(
@@ -1026,12 +1029,13 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     }
 
     /** 订阅里一条入站的链接:先正常那条;节点开了「订阅出 IPv6」且「双栈都出」时紧跟一条 v6 的 */
-    static void addSubLinks(List<String> links, Inbound in, InboundUser iu, Node node, Forward forward, SubNames.Name nm) {
+    static void addSubLinks(List<String> links, Inbound in, InboundUser iu, Node node, Forward forward, SubNames.Name nm,
+                            Tunnel tunnel) {
         String link = clientLink(in, iu, linkHost(node), forward, nm.text, nm.userSet);
         if (link != null && !link.isEmpty()) {
             links.add(link);
         }
-        String v6 = dualV6Host(node);
+        String v6 = listensV6(in, tunnel) ? dualV6Host(node) : null;
         if (v6 != null) {
             String l6 = clientLink(in, iu, v6, forward, nm.text + " v6", nm.userSet);
             if (l6 != null && !l6.isEmpty()) {
@@ -1054,6 +1058,30 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             h = h.substring(1, h.length() - 1).trim();
         }
         return h.isEmpty() ? null : h;
+    }
+
+    /**
+     * 这条协议的转发实际在不在听 IPv6:看转发所在隧道的监听地址是不是 [::](GostUtil.listenAddr 只认这个写法)。
+     * 节点开关只切自动隧道;老版本可能把协议转发落进车主手建的隧道,开启后也可能在隧道页被改回 0.0.0.0,
+     * 这些转发出 v6 那条只会连不上。hysteria2 / tuic 走 UDP 看 udp_listen_addr,其他看 tcp_listen_addr。
+     */
+    static boolean listensV6(Inbound in, Tunnel tunnel) {
+        if (tunnel == null) {
+            return false;
+        }
+        String p = in == null ? null : in.getProtocol();
+        String addr = ("hysteria2".equalsIgnoreCase(p) || "tuic".equalsIgnoreCase(p))
+                ? tunnel.getUdpListenAddr() : tunnel.getTcpListenAddr();
+        return addr != null && DUAL_STACK_LISTEN.equals(addr.trim());
+    }
+
+    /** 订阅生成时按需取转发所在隧道(只在节点开了「订阅出 v6」时才查;同一隧道只查一次,查不到也缓存) */
+    private Tunnel subTunnel(Node node, Forward forward, java.util.Map<Integer, java.util.Optional<Tunnel>> cache) {
+        if (dualV6Host(node) == null || forward == null || forward.getTunnelId() == null) {
+            return null;
+        }
+        return cache.computeIfAbsent(forward.getTunnelId(),
+                tid -> java.util.Optional.ofNullable(tunnelMapper.selectById(tid))).orElse(null);
     }
 
     /** 转发机配了域名就用域名 —— 车友在客户端里看到的是 hk.example.com 而不是车主的 IP */
@@ -1120,6 +1148,7 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         // 挨个去查线路表纯属浪费。
         java.util.Map<String, Boolean> lineStopped = new HashMap<>();
         java.util.Map<Long, SubNames.UserNames> namesByUser = new HashMap<>();
+        java.util.Map<Integer, java.util.Optional<Tunnel>> tunnelCache = new HashMap<>();
         for (InboundUser iu : ius) {
             if (iu.getStatus() != null && iu.getStatus() == 0) {
                 continue;
@@ -1150,7 +1179,8 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
             // 单条线路订阅不带「机器→落地」前缀;车友名字(线路别名 / 协议名)照样生效(三月拍板 1)
             SubNames.UserNames names = namesByUser.computeIfAbsent(iu.getUserId(), nodeNameStore::load);
             addSubLinks(links, in, iu, node, forward, SubNames.resolve(in.getProtocol(), in.getRemark(),
-                    node.getName(), null, lid != null, false, names.line(in.getNodeId(), lid), names.inbound(in.getId())));
+                    node.getName(), null, lid != null, false, names.line(in.getNodeId(), lid), names.inbound(in.getId())),
+                    subTunnel(node, forward, tunnelCache));
         }
         String joined = String.join("\n", links);
         return java.util.Base64.getEncoder().encodeToString(joined.getBytes(java.nio.charset.StandardCharsets.UTF_8));

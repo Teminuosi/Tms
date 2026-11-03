@@ -41,8 +41,8 @@ interface Node {
   ipv6Dual?: number;
   /** 节点上报的公网 IPv6 */
   reportedIpv6?: string[];
-  /** 节点程序是否支持切换监听(v14+) */
-  canSwitchListen?: boolean;
+  /** 节点程序是否支持切换监听(v14+);null = 离线或还没收到上报,不知道 */
+  canSwitchListen?: boolean | null;
   ipv6Loading?: boolean;
   /** 该机 sing-box 是否在运行(节点上报);null/undefined = 还没上报过 */
   singboxRunning?: boolean;
@@ -701,6 +701,11 @@ export default function NodePage() {
       if (res.code === 0) {
         toast.success(enable ? '已开启 IPv6' : '已关闭 IPv6');
         setNodeList(prev => prev.map(n => n.id === node.id ? { ...n, ipv6Dual: enable ? 1 : 0 } : n));
+        // 节点上本来就没有服务的转发(老版本留下的失败转发):跳过了,列出来让车主知道
+        const skipped: string[] = Array.isArray(res?.data?.skipped) ? res.data.skipped.filter((x: any) => typeof x === 'string') : [];
+        if (skipped.length) {
+          setIpv6Errors({ title: `${node.name}:${enable ? '已开启' : '已关闭'},有 ${skipped.length} 条转发没切(节点上本来就没有)`, items: skipped });
+        }
       } else {
         const fallback = enable ? '开启 IPv6 失败' : '关闭 IPv6 失败';
         const msg: string = typeof res?.msg === 'string' ? res.msg : '';
@@ -1000,9 +1005,22 @@ export default function NodePage() {
                         {node.ipv6Dual === 1 ? '关闭 IPv6' : '开启 IPv6'}
                       </Button>
                     </div>
-                    {node.canSwitchListen === false && (
-                      <div className="text-warning-600">节点程序太旧,先升级节点程序(v14)</div>
-                    )}
+                    {(() => {
+                      // canSwitchListen:true/false = 节点上报过;null/undefined = 离线或面板刚重启还没收到上报,不能说「太旧」
+                      const hasV6 = node.ipv6Dual === 1 || !!node.serverIpv6 || (node.reportedIpv6 || []).length > 0;
+                      if (node.canSwitchListen === false) {
+                        return hasV6
+                          ? <div className="text-warning-600">节点程序太旧,先升级节点程序(v14)</div>
+                          : <div className="text-default-400">开关 IPv6 需节点程序 v14</div>;
+                      }
+                      if (node.canSwitchListen == null) {
+                        if (node.connectionStatus === 'online') {
+                          return <div className="text-default-400">等节点上报版本,稍后刷新页面</div>;
+                        }
+                        return hasV6 ? <div className="text-default-400">节点离线,上线后才能开关 IPv6</div> : null;
+                      }
+                      return null;
+                    })()}
                     <div className="text-default-500">
                       订阅加 IPv6 节点:{node.ipv6Sub === 1 ? '开' : '关'}
                       {node.ipv6Sub === 1 && node.ipv6Dual !== 1 ? '(未开启 IPv6,暂不生效)' : ''}
@@ -1131,6 +1149,11 @@ export default function NodePage() {
                             只有这台已开启 IPv6(卡片上的「开启 IPv6」)且填了公网 IPv6 时才生效
                             {dual ? '' : ',当前未开启,打开也暂不生效'}。
                           </div>
+                          {form.domain.trim() && (
+                            <div className="text-xs text-warning-600 mt-0.5">
+                              注意:填了连接域名,但 v6 那条用的是裸 IPv6 地址,车友能直接看到这台机器的 IPv6。
+                            </div>
+                          )}
                         </div>
                         <Switch
                           size="sm"

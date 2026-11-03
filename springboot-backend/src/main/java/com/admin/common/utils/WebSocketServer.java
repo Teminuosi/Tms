@@ -89,6 +89,32 @@ public class WebSocketServer extends TextWebSocketHandler {
         return v == null ? java.util.Collections.emptyList() : v;
     }
 
+    /** 这台节点这次连上以后有没有报过系统信息(没报过 = 不知道它支持什么,不能当成「太旧」) */
+    public static boolean capsReported(Long nodeId) {
+        return nodeId != null && nodeCaps.containsKey(nodeId);
+    }
+
+    /**
+     * 记下 caps。系统信息(带 uptime)里没有 caps 的就是老节点程序 —— 记成空,
+     * 不能沿用以前别的程序版本报的(节点降回 v13 后面板还以为能切)。命令响应等别的消息不动。
+     */
+    static void recordCaps(Long nodeId, JSONObject info) {
+        java.util.List<String> caps = stringList(info, "caps");
+        if (caps != null) {
+            nodeCaps.put(nodeId, caps);
+        } else if (info != null && info.containsKey("uptime") && !info.containsKey("caps")) {
+            nodeCaps.put(nodeId, java.util.Collections.emptyList());
+        }
+    }
+
+    /** 节点断线 / 重新连上:上报的能力和 IPv6 都作废,等下次上报 */
+    static void forgetReported(Long nodeId) {
+        if (nodeId != null) {
+            nodeCaps.remove(nodeId);
+            nodeV6Addrs.remove(nodeId);
+        }
+    }
+
     /** 取 JSON 里的字符串数组;字段不存在或格式不对返回 null(表示「没上报」,不覆盖缓存) */
     static java.util.List<String> stringList(JSONObject info, String key) {
         if (info == null || !info.containsKey(key)) {
@@ -113,10 +139,7 @@ public class WebSocketServer extends TextWebSocketHandler {
 
     /** 记下 ipv6_addrs / caps;v6 列表有变化且节点没填 server_ipv6 时,把第一个写进库(只动这一列) */
     private void recordV6AndCaps(Long nodeId, JSONObject info) {
-        java.util.List<String> caps = stringList(info, "caps");
-        if (caps != null) {
-            nodeCaps.put(nodeId, caps);
-        }
+        recordCaps(nodeId, info);
         java.util.List<String> addrs = stringList(info, "ipv6_addrs");
         if (addrs == null) {
             return;
@@ -381,6 +404,8 @@ public class WebSocketServer extends TextWebSocketHandler {
                 
                 // 直接覆盖会话映射（不主动关闭旧连接，让它自然断开）
                 nodeSessions.put(nodeId, session);
+                // 重新连上的可能已经换了节点程序版本:旧的 caps / IPv6 作废,等这次的上报
+                forgetReported(nodeId);
                 
                 // 如果有旧连接，在覆盖映射后主动关闭它
                 if (existingSession != null && existingSession.isOpen()) {
@@ -478,8 +503,9 @@ public class WebSocketServer extends TextWebSocketHandler {
                 }
                 
                 log.info("节点 {} 当前活跃连接关闭，开始验证并更新状态", nodeId);
-                
+
                     nodeSessions.remove(nodeId);
+                    forgetReported(nodeId);
                     
                     // 更新节点状态为离线
                     Node node = nodeService.getById(nodeId);

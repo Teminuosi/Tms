@@ -55,4 +55,30 @@ class NodeIpv6Test {
         assertTrue(WebSocketServer.nodeCaps(987654L).isEmpty());
         assertTrue(WebSocketServer.nodeV6Addrs(null).isEmpty());
     }
+
+    /** caps 不能一直沿用旧的:节点换回老程序(上报不带 caps)或断线后,面板不能还认为能切 */
+    @Test
+    void capsFollowLatestReportAndClearOnDisconnect() {
+        Long id = 876543L;
+        WebSocketServer.forgetReported(id);
+        assertFalse(WebSocketServer.capsReported(id));
+
+        WebSocketServer.recordCaps(id, JSON.parseObject("{\"uptime\":5,\"caps\":[\"listen_switch\"],\"ipv6_addrs\":[\"2001:db8::1\"]}"));
+        assertTrue(WebSocketServer.capsReported(id));
+        assertEquals(Collections.singletonList("listen_switch"), WebSocketServer.nodeCaps(id));
+
+        // 命令响应等非系统信息消息不带 caps:不动缓存
+        WebSocketServer.recordCaps(id, JSON.parseObject("{\"type\":\"AddServiceResponse\",\"success\":true}"));
+        assertEquals(Collections.singletonList("listen_switch"), WebSocketServer.nodeCaps(id));
+
+        // 老节点程序(v13)的系统信息不带 caps:视为没有
+        WebSocketServer.recordCaps(id, JSON.parseObject("{\"uptime\":6,\"cpu_usage\":1.0}"));
+        assertTrue(WebSocketServer.capsReported(id));
+        assertTrue(WebSocketServer.nodeCaps(id).isEmpty());
+
+        WebSocketServer.recordCaps(id, JSON.parseObject("{\"uptime\":7,\"caps\":[\"listen_switch\"]}"));
+        WebSocketServer.forgetReported(id);
+        assertFalse(WebSocketServer.capsReported(id));
+        assertTrue(WebSocketServer.nodeCaps(id).isEmpty());
+    }
 }

@@ -114,7 +114,9 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
             n.setSingboxInstalling(com.admin.common.utils.WebSocketServer.getSingboxInstalling(n.getId()));
             n.setSingboxInstallErr(com.admin.common.utils.WebSocketServer.getSingboxInstallErr(n.getId()));
             n.setReportedIpv6(com.admin.common.utils.WebSocketServer.nodeV6Addrs(n.getId()));
-            n.setCanSwitchListen(com.admin.common.utils.WebSocketServer.nodeCaps(n.getId()).contains("listen_switch"));
+            // 还没收到上报(离线 / 面板刚重启)给 null:前端要和「上报了但版本低」分开显示
+            n.setCanSwitchListen(com.admin.common.utils.WebSocketServer.capsReported(n.getId())
+                    ? com.admin.common.utils.WebSocketServer.nodeCaps(n.getId()).contains("listen_switch") : null);
         }
         return R.ok(nodeList);
     }
