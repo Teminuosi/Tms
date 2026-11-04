@@ -26,6 +26,7 @@ public final class GostDeleteFallback {
 
     private static final String OK = "OK";
     private static final String NOT_FOUND = "not found";
+    private static final java.util.regex.Pattern RESAVE_FIXABLE = java.util.regex.Pattern.compile("^(service|chain) \\S+ not found$");
 
     private GostDeleteFallback() {
     }
@@ -56,6 +57,20 @@ public final class GostDeleteFallback {
         }
         String msg = r.getMsg();
         return msg.contains(NOT_FOUND) && msg.contains(" " + name + "_");
+    }
+
+    /**
+     * 节点回「service / chain ... not found」(节点上没有这条转发的服务,常见于节点重装过)时,
+     * 换成告诉车主怎么办的中文提示,原文附在后面;其它错误原样返回。
+     * 重新保存走更新,更新时 not found 会按原名新建,服务就回来了。
+     */
+    public static String withResaveHint(String msg) {
+        // 只认「service/chain 名字 not found」:「service X configuration not found」是注册表里有、配置里没有,
+        // 更新只替换已有的配置条目,重新保存修不好,不能叫车主一直去保存
+        if (msg == null || !RESAVE_FIXABLE.matcher(msg).matches()) {
+            return msg;
+        }
+        return "节点上找不到这条转发的服务(节点重装过就会这样,重新保存一下这条转发再试):" + msg;
     }
 
     /**

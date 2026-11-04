@@ -237,6 +237,18 @@ class NodeIpv6SwitchTest {
         assertTrue(r.getMsg().contains("#60") && r.getMsg().contains("20060"), r.getMsg());
         assertTrue(r.getMsg().contains("60_1_4") && r.getMsg().contains("60_1_0"), r.getMsg());
         assertTrue(r.getMsg().contains("名字对不上"), r.getMsg());
+        // 节点重装过也是这个样子:告诉车主重新保存这条转发(更新时 not found 会按原名重建)
+        assertTrue(r.getMsg().contains("节点重装过") && r.getMsg().contains("重新保存一下这条转发"), r.getMsg());
+        // 界面(node.tsx / 客户端 parseIpv6Msg)按 ';' 拆成一行一条:同一条失败里不能有 ';',否则提示被拆成孤零零的另一行
+        String tail = r.getMsg().substring(r.getMsg().indexOf("失败的:") + 4);
+        String entry60 = null;
+        for (String p : tail.split(";")) {
+            if (p.contains("#60")) {
+                entry60 = p;
+            }
+        }
+        assertNotNull(entry60, r.getMsg());
+        assertTrue(entry60.contains("重新保存一下这条转发"), entry60);
         assertFalse(r.getMsg().contains("#50"), r.getMsg());
         assertTrue(r.getMsg().contains("已把切过去的 2 条切回原地址"), r.getMsg());
         assertEquals(3, f.sent.size());

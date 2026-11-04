@@ -230,6 +230,10 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
 
         // 3. 执行删除操作
         boolean result = this.removeById(id);
+        if (result) {
+            // 这台节点报过的 IPv6 等内存记录一并丢掉
+            com.admin.common.utils.WebSocketServer.forgetNodeV6(id);
+        }
         return result ? R.ok(SUCCESS_DELETE_MSG) : R.err(ERROR_DELETE_MSG);
     }
 

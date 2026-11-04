@@ -218,7 +218,8 @@ public class NodeIpv6Switch {
                         // 库里是运行中,节点上却按哪个名字都找不到:不是老版本留下的坏转发,是名字对不上,
                         // 照样算失败、整体回滚,别悄悄跳过
                         failed.put(it, "转发 #" + it.forwardId + "(端口 " + it.listenPort + ")库里是运行中,但节点上按 "
-                                + String.join(" / ", it.candidates) + " 都找不到这个服务(名字对不上),没法切换");
+                                + String.join(" / ", it.candidates) + " 都找不到这个服务(节点重装过或名字对不上),没法切换,"
+                                + "重新保存一下这条转发再试");
                     } else {
                         skipped.putIfAbsent(it.forwardId, "转发 #" + it.forwardId + "(端口 " + it.listenPort
                                 + "):节点上没有这条转发的服务(" + String.join(" / ", it.candidates)

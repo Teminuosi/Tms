@@ -112,6 +112,7 @@ public class WebSocketServer extends TextWebSocketHandler {
         if (nodeId != null) {
             nodeCaps.remove(nodeId);
             nodeV6Addrs.remove(nodeId);
+            v6GoneStreak.remove(nodeId);
         }
     }
 
@@ -137,37 +138,230 @@ public class WebSocketServer extends TextWebSocketHandler {
         }
     }
 
-    /** 记下 ipv6_addrs / caps;v6 列表有变化且节点没填 server_ipv6 时,把第一个写进库(只动这一列) */
-    private void recordV6AndCaps(Long nodeId, JSONObject info) {
-        recordCaps(nodeId, info);
+    /**
+     * 这次上报里的 IPv6 列表;null = 不动缓存。
+     * 新节点程序(系统信息里带 caps 的,和 ipv6_addrs 同一版加的)没有公网 v6 时 ipv6_addrs 整个不带(omitempty),
+     * 这时要当成空列表,否则机器没了 v6 面板还一直显示旧地址。老节点程序(不带 caps)本来就不报,照旧不动。
+     */
+    static java.util.List<String> reportedV6(JSONObject info) {
         java.util.List<String> addrs = stringList(info, "ipv6_addrs");
+        if (addrs != null) {
+            return addrs;
+        }
+        if (info != null && info.containsKey("uptime") && info.containsKey("caps") && !info.containsKey("ipv6_addrs")) {
+            return java.util.Collections.emptyList();
+        }
+        return null;
+    }
+
+    /**
+     * 新节点连续报「没有公网 IPv6」多少次、并且持续多久,才清库里的 server_ipv6(订阅就不再出连不上的 v6 条)。
+     * 节点约 2 秒报一次(ticker 2 秒,取 CPU 占用的 1 秒在周期内),30 次 ≈ 60 秒;再加 60 秒下限,
+     * 一两次探测失败(拨 udp6 超时、网卡刚起来)不会误清。
+     */
+    static final int V6_GONE_REPORTS = 30;
+    static final long V6_GONE_MS = 60_000L;
+    /** 每台节点最多记多少个报过的 IPv6(临时地址会轮换,不能无限长) */
+    static final int V6_SEEN_MAX = 16;
+    /** nodeId -> {连续空的次数, 第一次空的时间, 这一轮已经处理完(1)};数组只在 compute 里换新,不原地改 */
+    private static final ConcurrentHashMap<Long, long[]> v6GoneStreak = new ConcurrentHashMap<>();
+    /** nodeId -> 自动清掉的那个 server_ipv6(规范化后);v6 回来时优先填回它,填回后丢掉 */
+    private static final ConcurrentHashMap<Long, String> v6Cleared = new ConcurrentHashMap<>();
+    /**
+     * nodeId -> 面板这次启动以来节点报过的公网 IPv6(规范化后)。只有库里的 server_ipv6 在这里面
+     * (节点真有过这个地址、后来没了)才清;车主手填、节点从没报过的(被过滤的网段、特殊环境)永远不清。
+     * 断线 / 重连不清这个集合:丢 v6 往往伴随一次重连,正是要靠它记得的时候。
+     */
+    private static final ConcurrentHashMap<Long, java.util.Set<String>> v6Seen = new ConcurrentHashMap<>();
+
+    /** 规范化 IPv6 用来比较(大小写、方括号、:: 压缩写法都统一成完整写法);不合法返回 null */
+    static String normV6(String raw) {
+        try {
+            String s = com.admin.service.impl.NodeServiceImpl.normalizeServerIpv6(raw);
+            if (s == null || s.isEmpty()) {
+                return null;
+            }
+            // 上面已校验是 IPv6 字面量,这里不会查 DNS
+            return java.net.InetAddress.getByName(s).getHostAddress();
+        } catch (Exception bad) {
+            return null;
+        }
+    }
+
+    static void rememberV6(Long nodeId, java.util.List<String> addrs) {
+        if (nodeId == null || addrs == null) {
+            return;
+        }
+        for (String a : addrs) {
+            String n = normV6(a);
+            if (n == null) {
+                continue;
+            }
+            java.util.Set<String> seen = v6Seen.computeIfAbsent(nodeId,
+                    k -> java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>()));
+            synchronized (seen) {
+                seen.remove(n);   // 挪到最新
+                seen.add(n);
+                java.util.Iterator<String> it = seen.iterator();
+                while (seen.size() > V6_SEEN_MAX && it.hasNext()) {
+                    it.next();
+                    it.remove();  // 丢最久没报过的
+                }
+            }
+        }
+    }
+
+    /** 节点被删除:它的 IPv6 内存记录全部丢掉 */
+    public static void forgetNodeV6(Long nodeId) {
+        if (nodeId != null) {
+            v6Seen.remove(nodeId);
+            v6Cleared.remove(nodeId);
+            v6GoneStreak.remove(nodeId);
+        }
+    }
+
+    /** 库里的这个地址节点有没有报过(面板这次启动以来) */
+    static boolean v6WasSeen(Long nodeId, String stored) {
+        String n = normV6(stored);
+        java.util.Set<String> seen = nodeId == null ? null : v6Seen.get(nodeId);
+        return n != null && seen != null && seen.contains(n);
+    }
+
+    /**
+     * 自动填写选哪个地址:之前自动清掉的那个还在新列表里就用它(车主在多地址机器上选的是它),
+     * 否则用第一个。返回 normalizeServerIpv6 后的写法;都不合法返回 null。
+     */
+    static String pickRefill(java.util.List<String> addrs, String cleared) {
+        String want = normV6(cleared);
+        if (want != null) {
+            for (String a : addrs) {
+                if (want.equals(normV6(a))) {
+                    return com.admin.service.impl.NodeServiceImpl.normalizeServerIpv6(a);
+                }
+            }
+        }
+        for (String a : addrs) {
+            if (normV6(a) != null) {
+                return com.admin.service.impl.NodeServiceImpl.normalizeServerIpv6(a);
+            }
+        }
+        return null;
+    }
+
+    /** 这一轮连续空已经处理完(清掉了,或确定没什么可清):之后不再查库,等报了地址 / 重连再重新数 */
+    static void markV6GoneDone(Long nodeId) {
+        v6GoneStreak.computeIfPresent(nodeId, (k, v) -> new long[]{v[0], v[1], 1});
+    }
+
+    /**
+     * 记一次上报,返回 true = 这次该去清 server_ipv6。
+     * 处理完(markV6GoneDone)之前每次都返回 true:写库抛异常时下一次上报会重试。
+     * 只认带 caps 的系统信息(新节点程序);老节点、命令响应一律不计也不重置。报了地址就重置。
+     */
+    static boolean v6GoneShouldClear(Long nodeId, JSONObject info, java.util.List<String> addrs, long now) {
+        if (nodeId == null || addrs == null || info == null || !info.containsKey("uptime") || !info.containsKey("caps")) {
+            return false;
+        }
+        if (!addrs.isEmpty()) {
+            v6GoneStreak.remove(nodeId);
+            return false;
+        }
+        boolean[] due = new boolean[1];
+        v6GoneStreak.compute(nodeId, (k, v) -> {
+            long[] s = v == null ? new long[]{1, now, 0} : new long[]{v[0] + 1, v[1], v[2]};
+            due[0] = s[2] == 0 && s[0] >= V6_GONE_REPORTS && now - s[1] >= V6_GONE_MS;
+            return s;
+        });
+        return due[0];
+    }
+
+    /** 记下 ipv6_addrs / caps;v6 列表有变化且节点没填 server_ipv6 时,把第一个写进库(只动这一列) */
+    void recordV6AndCaps(Long nodeId, JSONObject info) {
+        recordV6AndCaps(nodeId, info, System.currentTimeMillis());
+    }
+
+    void recordV6AndCaps(Long nodeId, JSONObject info, long now) {
+        recordCaps(nodeId, info);
+        java.util.List<String> addrs = reportedV6(info);
         if (addrs == null) {
             return;
         }
         java.util.List<String> old = nodeV6Addrs.put(nodeId, addrs);
+        rememberV6(nodeId, addrs);
+        if (v6GoneShouldClear(nodeId, info, addrs, now)) {
+            clearServerIpv6(nodeId);
+            return;
+        }
         // 系统信息几秒一报,只在列表变化(含首次)时才查库,避免每次都打 DB
         if (addrs.isEmpty() || addrs.equals(old) || nodeService == null) {
             return;
         }
         try {
             Node node = nodeService.getById(nodeId);
-            if (node == null || (node.getServerIpv6() != null && !node.getServerIpv6().trim().isEmpty())) {
+            if (node == null) {
                 return;
             }
-            String first;
-            try {
-                first = com.admin.service.impl.NodeServiceImpl.normalizeServerIpv6(addrs.get(0));
-            } catch (IllegalArgumentException bad) {
+            if (node.getServerIpv6() != null && !node.getServerIpv6().trim().isEmpty()) {
+                v6Cleared.remove(nodeId); // 车主已经填了别的,之前清掉的那个不用再记
                 return;
             }
-            if (first.isEmpty()) {
+            String first = pickRefill(addrs, v6Cleared.get(nodeId));
+            if (first == null || first.isEmpty()) {
                 return;
             }
-            nodeService.update(new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<Node>()
+            // 只在这一列还是空的时候写:车主同一时刻保存了地址的话,以车主的为准
+            boolean ok = nodeService.update(new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<Node>()
                     .eq(Node::getId, nodeId)
+                    .and(w -> w.isNull(Node::getServerIpv6).or().eq(Node::getServerIpv6, ""))
                     .set(Node::getServerIpv6, first));
+            if (ok) {
+                v6Cleared.remove(nodeId);
+            }
         } catch (Exception e) {
             log.warn("自动填写节点 {} 的 IPv6 失败: {}", nodeId, e.getMessage());
+        }
+    }
+
+    /**
+     * 新节点持续报「没有公网 IPv6」:清掉库里的 server_ipv6(只动这一列),订阅不再出连不上的 v6 条。
+     * 只清节点报过的地址(v6Seen),节点从没报过的手填值不动。
+     * ipv6_dual 不动:监听 [::] 没坏处,订阅出 v6 条还要 server_ipv6(InboundServiceImpl.dualV6Host)。
+     * v6 回来时上面的自动填写会在 server_ipv6 为空时重新填上。
+     */
+    private void clearServerIpv6(Long nodeId) {
+        if (nodeService == null) {
+            return;
+        }
+        try {
+            Node node = nodeService.getById(nodeId);
+            if (node == null || node.getServerIpv6() == null || node.getServerIpv6().trim().isEmpty()) {
+                markV6GoneDone(nodeId);
+                return;
+            }
+            String read = node.getServerIpv6();
+            if (!v6WasSeen(nodeId, read)) {
+                // 节点从没报过这个地址(车主手填的 / 面板重启后还没见过):不清,只记一笔
+                log.info("节点 {} 持续上报没有公网 IPv6,但库里的 server_ipv6={} 节点没报过(可能是手填的),不清",
+                        nodeId, read);
+                markV6GoneDone(nodeId);
+                return;
+            }
+            // 只在这一列还是刚读到的值时清:车主同一时刻改了地址的话,以车主的为准
+            boolean ok = nodeService.update(new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<Node>()
+                    .eq(Node::getId, nodeId)
+                    .eq(Node::getServerIpv6, read)
+                    .set(Node::getServerIpv6, null));
+            markV6GoneDone(nodeId);
+            if (ok) {
+                v6Cleared.put(nodeId, read);
+                log.info("节点 {} 连续 {} 次以上、超过 {} 秒上报都没有公网 IPv6,清掉库里的 server_ipv6(原来是 {})",
+                        nodeId, V6_GONE_REPORTS, V6_GONE_MS / 1000, read);
+            } else {
+                log.info("节点 {} 的 server_ipv6 在清之前被改过,不清", nodeId);
+            }
+        } catch (Exception e) {
+            // 不标记处理完:下一次上报再试
+            log.warn("清除节点 {} 的 IPv6 失败: {}", nodeId, e.getMessage());
         }
     }
     

@@ -640,7 +640,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 Long outNodeId = nodeInfo.getOutNode().getId();
                 GostDto remoteResult = GostUtil.PauseRemoteService(outNodeId, used[0]);
                 if (!isGostOperationSuccess(remoteResult)) {
-                    return R.err(operation + "远端服务失败：" + remoteResult.getMsg());
+                    return R.err(operation + "远端服务失败：" + GostDeleteFallback.withResaveHint(remoteResult.getMsg()));
                 }
             }
         } else {
@@ -651,13 +651,13 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 Long outNodeId = nodeInfo.getOutNode().getId();
                 GostDto remoteResult = GostUtil.ResumeRemoteService(outNodeId, used[0]);
                 if (!isGostOperationSuccess(remoteResult)) {
-                    return R.err(operation + "远端服务失败：" + remoteResult.getMsg());
+                    return R.err(operation + "远端服务失败：" + GostDeleteFallback.withResaveHint(remoteResult.getMsg()));
                 }
             }
         }
 
         if (!isGostOperationSuccess(gostResult)) {
-            return R.err(operation + "服务失败：" + gostResult.getMsg());
+            return R.err(operation + "服务失败：" + GostDeleteFallback.withResaveHint(gostResult.getMsg()));
         }
 
         // 9. 更新转发状态
@@ -1519,10 +1519,34 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 n.equals(serviceName) ? limiter : zeroNameLimiter, forward.getRemoteAddr(), tunnelType, tunnel, strategy, interfaceName), used);
 
         if (result.getMsg().contains(GOST_NOT_FOUND_MSG)) {
+            ensureLimiterBeforeRecreate(speedLimitService, limiter, inNode.getId());
             result = GostUtil.AddService(inNode.getId(), serviceName, forward.getInPort(), limiter, forward.getRemoteAddr(), tunnelType, tunnel, strategy, interfaceName);
         }
 
         return isGostOperationSuccess(result) ? R.ok() : R.err(result.getMsg());
+    }
+
+    /**
+     * 主服务在节点上找不到、要按原名新建时(多半是节点重装过),它引用的限速器多半也没了 ——
+     * gost 找不到限速器会静默当成不限速。新建前先把限速器补到节点上。
+     * 只走这条「新建」路径:节点上服务还在的正常保存一条命令都不多发。
+     * ensureLimiterOnNode 幂等(已存在就按规则当前值更新一遍)。
+     * 车友专属限速器(900000000 + userId)的规则 id 没存在转发上,补不了,跳过。
+     * 补失败不挡保存(和以前一样能把转发建回来),只记日志。
+     */
+    static void ensureLimiterBeforeRecreate(com.admin.service.SpeedLimitService sls, Integer limiter, Long nodeId) {
+        if (sls == null || limiter == null || nodeId == null
+                || limiter >= com.admin.common.task.CheckGostConfigAsync.PER_USER_LIMITER_BASE) {
+            return;
+        }
+        try {
+            R r = sls.ensureLimiterOnNode(limiter, nodeId);
+            if (r == null || r.getCode() != 0) {
+                log.warn("新建转发服务前补限速器 {} 到节点 {} 失败: {}", limiter, nodeId, r == null ? null : r.getMsg());
+            }
+        } catch (Exception e) {
+            log.warn("新建转发服务前补限速器 {} 到节点 {} 失败: {}", limiter, nodeId, e.getMessage());
+        }
     }
 
     /**

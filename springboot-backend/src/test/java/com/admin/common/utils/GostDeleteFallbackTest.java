@@ -132,4 +132,21 @@ class GostDeleteFallbackTest {
         };
         assertEquals("等待响应超时", GostDeleteFallback.delete(GostDeleteFallback.candidateNames(5L, 2, 7), whole, Collections.emptyList()));
     }
+
+    /** 节点重装过:暂停 / 恢复回 service / chain not found,提示车主重新保存这条转发;别的错误原样 */
+    @Test
+    void notFoundGetsResaveHint() {
+        String s = GostDeleteFallback.withResaveHint("service 5_2_0_tcp not found");
+        assertTrue(s.contains("重新保存一下这条转发") && s.endsWith("service 5_2_0_tcp not found"), s);
+        String c = GostDeleteFallback.withResaveHint("chain 5_2_0_chains not found");
+        assertTrue(c.contains("重新保存一下这条转发") && c.endsWith("chain 5_2_0_chains not found"), c);
+        // 注册表里有、配置里没有:重新保存修不好(更新只替换已有配置条目),不给这个提示
+        assertEquals("service 5_2_0_tcp configuration not found",
+                GostDeleteFallback.withResaveHint("service 5_2_0_tcp configuration not found"));
+        assertEquals("xservice 5_2_0_tcp not found", GostDeleteFallback.withResaveHint("xservice 5_2_0_tcp not found"));
+        assertEquals("等待响应超时", GostDeleteFallback.withResaveHint("等待响应超时"));
+        assertEquals("发送消息失败: x not found", GostDeleteFallback.withResaveHint("发送消息失败: x not found"));
+        assertEquals("limiter 3 not found", GostDeleteFallback.withResaveHint("limiter 3 not found"));
+        assertNull(GostDeleteFallback.withResaveHint(null));
+    }
 }
