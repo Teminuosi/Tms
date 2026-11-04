@@ -201,26 +201,29 @@ download_gost() {
   return 0
 }
 
-# 等几秒确认 gost 真的稳定在跑:连续两次 active 且主进程 PID 没变(崩了被 systemd 拉起来 PID 会变)
+# 等几秒确认 gost 真的稳定在跑:等 3 秒,再连着 3 次(隔 5 秒)都 active、主进程 PID 没变(崩了被 systemd 拉起来 PID 会变)、
+# NRestarts 不涨(CentOS 7 的 systemd 219 没有 NRestarts,取到空,就只看 PID)
 gost_stays_active() {
-  local i ok=0 pid last=""
+  local i ok=0 pid last="" n0
   sleep 3
-  for i in 1 2 3 4 5; do
+  n0=$(systemctl show -p NRestarts gost 2>/dev/null | cut -d= -f2)
+  for i in 1 2 3 4 5 6; do
     if systemctl is-active --quiet gost 2>/dev/null; then
       pid=$(systemctl show -p MainPID gost 2>/dev/null | cut -d= -f2)
-      pid="${pid:-unknown}"
-      if [[ "$pid" != "0" && "$pid" = "$last" ]]; then
+      pid="${pid:-0}"
+      if [[ "$pid" != "0" && "$pid" = "$last" && "$(systemctl show -p NRestarts gost 2>/dev/null | cut -d= -f2)" = "$n0" ]]; then
         ok=$((ok + 1))
       else
         ok=1
+        n0=$(systemctl show -p NRestarts gost 2>/dev/null | cut -d= -f2)
       fi
       last="$pid"
-      [[ $ok -ge 2 ]] && return 0
+      [[ $ok -ge 3 ]] && return 0
     else
       ok=0
       last=""
     fi
-    sleep 2
+    sleep 5
   done
   return 1
 }
