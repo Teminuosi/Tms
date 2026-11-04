@@ -161,6 +161,75 @@ if [ "$COUNTRY" = "CN" ]; then
   echo "🌏 使用国内镜像: ${GH_MIRROR}"
 fi
 
+# 下载 gost 到临时文件并校验:必须是本机架构的 ELF 程序、大小正常。
+# 镜像 / GitHub 出错时回的是网页,以前会被当成程序装上去,gost 起不来、转发全断。
+# 不合格:删掉临时文件、返回 1,现有程序和服务一概不动。
+MIN_GOST_SIZE=5000000
+download_gost() {
+  local dest="$1" arch want magic mach size
+  rm -f "$dest"
+  if ! curl -fL --retry 2 --connect-timeout 15 "$DOWNLOAD_URL" -o "$dest"; then
+    echo "❌ 下载失败(网络不通,或下载地址返回了错误): $DOWNLOAD_URL"
+    rm -f "$dest"
+    return 1
+  fi
+  arch=$(get_architecture)
+  case "$arch" in
+    arm64) want="b700" ;;   # ELF e_machine = EM_AARCH64
+    *)     want="3e00" ;;   # ELF e_machine = EM_X86_64
+  esac
+  magic=$(head -c 4 "$dest" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+  mach=$(od -An -tx1 -j 18 -N 2 "$dest" 2>/dev/null | tr -d ' \n')
+  size=$(wc -c < "$dest" 2>/dev/null | tr -d ' ')
+  if [[ "$magic" != "7f454c46" ]]; then
+    echo "❌ 下载到的不是 gost 程序(多半是镜像或 GitHub 返回了错误页),已丢弃;现有程序和服务没有改动。"
+    rm -f "$dest"
+    return 1
+  fi
+  if [[ "$mach" != "$want" ]]; then
+    echo "❌ 下载到的 gost 架构不对(本机需要 ${arch}),已丢弃;现有程序和服务没有改动。"
+    rm -f "$dest"
+    return 1
+  fi
+  if [[ -z "$size" || "$size" -lt "$MIN_GOST_SIZE" ]]; then
+    echo "❌ 下载到的 gost 文件太小(${size:-0} 字节),可能不完整,已丢弃;现有程序和服务没有改动。"
+    rm -f "$dest"
+    return 1
+  fi
+  chmod +x "$dest"
+  echo "🔍 校验通过: ${arch} 程序,大小 $((size / 1024 / 1024)) MB"
+  return 0
+}
+
+# 等几秒确认 gost 真的稳定在跑:连续两次 active 且主进程 PID 没变(崩了被 systemd 拉起来 PID 会变)
+gost_stays_active() {
+  local i ok=0 pid last=""
+  sleep 3
+  for i in 1 2 3 4 5; do
+    if systemctl is-active --quiet gost 2>/dev/null; then
+      pid=$(systemctl show -p MainPID gost 2>/dev/null | cut -d= -f2)
+      pid="${pid:-unknown}"
+      if [[ "$pid" != "0" && "$pid" = "$last" ]]; then
+        ok=$((ok + 1))
+      else
+        ok=1
+      fi
+      last="$pid"
+      [[ $ok -ge 2 ]] && return 0
+    else
+      ok=0
+      last=""
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+# 从 gost 日志里读版本号(节点连上面板时写 version=x.y.z)。那行日志带着节点密钥,只摘版本号,绝不整行打印
+gost_log_version() {
+  journalctl -u gost --no-pager --since "$1" 2>/dev/null | grep -o 'version=[0-9][0-9.]*' | tail -n 1 | cut -d= -f2
+}
+
 # 安装功能
 install_gost() {
   echo "🚀 开始安装 GOST..."
@@ -170,7 +239,17 @@ install_gost() {
   check_and_install_tcpkill
   
 
+  local new_dir=0
+  [[ -d "$INSTALL_DIR" ]] || new_dir=1
   mkdir -p "$INSTALL_DIR"
+
+  # 下载 gost(先下到临时文件并校验;不合格就停在这里:不停旧服务、不删旧程序、不写配置和服务)
+  echo "⬇️ 下载 gost 中..."
+  if ! download_gost "$INSTALL_DIR/gost.new"; then
+    echo "❌ 下载失败，请检查网络或下载链接。"
+    [[ "$new_dir" = 1 ]] && rmdir "$INSTALL_DIR" 2>/dev/null
+    return 1
+  fi
 
   # 停止并禁用已有服务
   if systemctl list-units --full -all | grep -Fq "gost.service"; then
@@ -182,18 +261,9 @@ install_gost() {
   # 删除旧文件
   [[ -f "$INSTALL_DIR/gost" ]] && echo "🧹 删除旧文件 gost" && rm -f "$INSTALL_DIR/gost"
 
-  # 下载 gost
-  echo "⬇️ 下载 gost 中..."
-  curl -L "$DOWNLOAD_URL" -o "$INSTALL_DIR/gost"
-  if [[ ! -f "$INSTALL_DIR/gost" || ! -s "$INSTALL_DIR/gost" ]]; then
-    echo "❌ 下载失败，请检查网络或下载链接。"
-    exit 1
-  fi
+  mv "$INSTALL_DIR/gost.new" "$INSTALL_DIR/gost"
   chmod +x "$INSTALL_DIR/gost"
   echo "✅ 下载完成"
-
-  # 打印版本
-  echo "🔎 gost 版本：$($INSTALL_DIR/gost -V)"
 
   # 写入 config.json (安装时总是创建新的)
   CONFIG_FILE="$INSTALL_DIR/config.json"
@@ -242,13 +312,14 @@ EOF
 
   # 检查状态
   echo "🔄 检查服务状态..."
-  if systemctl is-active --quiet gost; then
+  if gost_stays_active; then
     echo "✅ 安装完成，gost服务已启动并设置为开机启动。"
     echo "📁 配置目录: $INSTALL_DIR"
     echo "🔧 服务状态: $(systemctl is-active gost)"
   else
     echo "❌ gost服务启动失败，请执行以下命令查看日志："
     echo "journalctl -u gost -f"
+    return 1
   fi
 }
 
@@ -266,12 +337,23 @@ update_gost() {
   # 检查并安装 tcpkill
   check_and_install_tcpkill
   
-  # 先下载新版本
+  # 先下载新版本(下到临时文件并校验,不合格就停在这里,现有程序和服务不动)
   echo "⬇️ 下载最新版本..."
-  curl -L "$DOWNLOAD_URL" -o "$INSTALL_DIR/gost.new"
-  if [[ ! -f "$INSTALL_DIR/gost.new" || ! -s "$INSTALL_DIR/gost.new" ]]; then
+  if ! download_gost "$INSTALL_DIR/gost.new"; then
     echo "❌ 下载失败。"
     return 1
+  fi
+
+  # 记下更新前服务在不在跑,并备份当前程序(新程序起不来时换回)
+  local was_active=0 since ver i
+  systemctl is-active --quiet gost 2>/dev/null && was_active=1
+  if [[ -f "$INSTALL_DIR/gost" ]]; then
+    if ! cp -f "$INSTALL_DIR/gost" "$INSTALL_DIR/gost.bak"; then
+      echo "❌ 备份当前程序失败(磁盘满了?),没有更新,现有程序和服务没有改动。"
+      rm -f "$INSTALL_DIR/gost.new" "$INSTALL_DIR/gost.bak"
+      return 1
+    fi
+    echo "💾 已备份当前程序: $INSTALL_DIR/gost.bak"
   fi
 
   # 停止服务
@@ -283,14 +365,43 @@ update_gost() {
   # 替换文件
   mv "$INSTALL_DIR/gost.new" "$INSTALL_DIR/gost"
   chmod +x "$INSTALL_DIR/gost"
-  
-  # 打印版本
-  echo "🔎 新版本：$($INSTALL_DIR/gost -V)"
 
   # 重启服务
+  since=$(date '+%Y-%m-%d %H:%M:%S')
   echo "🔄 重启服务..."
   systemctl start gost
-  
+
+  # 确认新程序真的起来了;原来在跑、现在起不来 → 换回旧程序
+  if ! gost_stays_active; then
+    if [[ "$was_active" = 1 && -f "$INSTALL_DIR/gost.bak" ]]; then
+      echo "❌ 新程序启动失败,正在换回旧版本..."
+      systemctl stop gost 2>/dev/null
+      cp -f "$INSTALL_DIR/gost.bak" "$INSTALL_DIR/gost"
+      chmod +x "$INSTALL_DIR/gost"
+      systemctl reset-failed gost 2>/dev/null
+      systemctl start gost
+      if gost_stays_active; then
+        echo "↩️ 已换回旧版本,服务已恢复运行。"
+      else
+        echo "❌ 换回旧版本后服务仍未运行,请执行以下命令查看日志："
+        echo "journalctl -u gost -f"
+      fi
+      echo "❌ 更新失败,已回滚到更新前的程序。"
+      return 1
+    fi
+    echo "⚠️ gost 服务当前没有在运行(更新前也没有在运行),请执行以下命令查看日志："
+    echo "journalctl -u gost -f"
+  fi
+
+  # 打印版本(只从日志里摘 version=x.y.z;不执行 gost -V:TMS 的 gost 没有 -V,在 /etc/gost 里跑会起第二个节点)
+  ver=""
+  for i in 1 2 3; do
+    ver=$(gost_log_version "$since")
+    [[ -n "$ver" ]] && break
+    sleep 2
+  done
+  echo "🔎 新版本：${ver:-暂未读到(节点连上面板后会写进日志)}"
+
   echo "✅ 更新完成，服务已重新启动。"
 }
 
@@ -354,8 +465,9 @@ main() {
   # 如果提供了命令行参数，直接执行安装
   if [[ -n "$SERVER_ADDR" && -n "$SECRET" ]]; then
     install_gost
+    rc=$?
     delete_self
-    exit 0
+    exit $rc
   fi
 
   # 显示交互式菜单
@@ -366,13 +478,15 @@ main() {
     case $choice in
       1)
         install_gost
+        rc=$?
         delete_self
-        exit 0
+        exit $rc
         ;;
       2)
         update_gost
+        rc=$?
         delete_self
-        exit 0
+        exit $rc
         ;;
       3)
         uninstall_gost
