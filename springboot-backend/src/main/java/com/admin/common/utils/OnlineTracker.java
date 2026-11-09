@@ -3,6 +3,7 @@ package com.admin.common.utils;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 车友「在用」状态:只在内存里记每个车友 / 每条转发最后一次有流量上报的时间。
@@ -19,8 +20,21 @@ public final class OnlineTracker {
     /** 超过这么久没流量的记录在取快照时顺手清掉,免得删掉的转发一直占内存 */
     static final long KEEP_MS = 30L * 24 * 3600 * 1000;
 
+    /**
+     * 一次上报 u+d 至少这么多字节才算「在用」。
+     * 车友的 gost 端口是公网端口,扫描器 / 健康检查 / 测速探一下只有几十到几百字节,不能把他标成「在用」;
+     * 真在用(哪怕只是手机后台保活)5 秒里也远超 2KB。
+     */
+    static final long MIN_BYTES = 2048;
+
+    /** 记录时也顺手清过期的:每记这么多次,或者离上次清理超过 PRUNE_INTERVAL_MS,清一次(没人看面板也不会越攒越多) */
+    static final int PRUNE_EVERY = 1000;
+    static final long PRUNE_INTERVAL_MS = 10L * 60 * 1000;
+
     private static final ConcurrentHashMap<Long, Long> USERS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<Long, Long> FORWARDS = new ConcurrentHashMap<>();
+    private static final AtomicLong RECORDS = new AtomicLong();
+    private static volatile long lastPruneMs = 0;
 
     private OnlineTracker() {
     }
@@ -58,11 +72,11 @@ public final class OnlineTracker {
         return Long.parseLong(s);
     }
 
-    /** 记一次上报。u+d 不大于 0、服务名认不出来就什么都不做。 */
+    /** 记一次上报。u+d 不到 MIN_BYTES(扫描 / 探测)、服务名认不出来就什么都不做。 */
     public static void record(String serviceName, Long u, Long d, long nowMs) {
-        long up = u == null ? 0L : u;
-        long down = d == null ? 0L : d;
-        if (up <= 0 && down <= 0) {
+        long up = u == null || u < 0 ? 0L : u;
+        long down = d == null || d < 0 ? 0L : d;
+        if (up + down < MIN_BYTES) {
             return;
         }
         long[] ids = parse(serviceName);
@@ -71,6 +85,20 @@ public final class OnlineTracker {
         }
         FORWARDS.merge(ids[0], nowMs, Math::max);
         USERS.merge(ids[1], nowMs, Math::max);
+        if (RECORDS.incrementAndGet() % PRUNE_EVERY == 0 || nowMs - lastPruneMs >= PRUNE_INTERVAL_MS) {
+            lastPruneMs = nowMs;
+            prune(USERS, nowMs);
+            prune(FORWARDS, nowMs);
+        }
+    }
+
+    private static void prune(ConcurrentHashMap<Long, Long> src, long nowMs) {
+        for (Map.Entry<Long, Long> e : src.entrySet()) {
+            Long t = e.getValue();
+            if (t == null || nowMs - t > KEEP_MS) {
+                src.remove(e.getKey(), t);
+            }
+        }
     }
 
     /** {users:{userId: lastSeenMs}, forwards:{forwardId: lastSeenMs}, now: 面板当前毫秒} */
@@ -99,5 +127,12 @@ public final class OnlineTracker {
     static void clear() {
         USERS.clear();
         FORWARDS.clear();
+        RECORDS.set(0);
+        lastPruneMs = 0;
+    }
+
+    /** 只给测试用:不清理、直接数内存里有几条 */
+    static int rawSize() {
+        return USERS.size() + FORWARDS.size();
     }
 }
