@@ -71,6 +71,17 @@ public class UserController extends BaseController {
         return userService.updatePassword(changePasswordDto);
     }
 
+    /**
+     * 车友「在用」状态:{users:{userId: 最后有流量的毫秒}, forwards:{forwardId: 同}, now: 面板当前毫秒}。
+     * 只在内存里记(面板重启后从头记)。客户端每 10~15 秒拉一次,所以请求日志只打 DEBUG。
+     */
+    @LogAnnotation(quiet = true)
+    @RequireRole
+    @PostMapping("/online-map")
+    public R onlineMap() {
+        return R.ok(com.admin.common.utils.OnlineTracker.snapshot(System.currentTimeMillis()));
+    }
+
     @LogAnnotation
     @RequireRole
     @PostMapping("/reset")

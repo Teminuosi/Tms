@@ -9,6 +9,7 @@ import com.admin.common.utils.AESCrypto;
 import com.admin.common.utils.AutoPauseSkips;
 import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
+import com.admin.common.utils.OnlineTracker;
 import com.admin.entity.*;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
@@ -223,6 +224,12 @@ public class FlowController extends BaseController {
      * 处理流量数据的核心逻辑
      */
     private String processFlowData(FlowDto flowDataList) {
+        // 车友「在用」状态:只记内存,出任何错都不能影响下面的流量记账
+        try {
+            OnlineTracker.record(flowDataList.getN(), flowDataList.getU(), flowDataList.getD(), System.currentTimeMillis());
+        } catch (Exception e) {
+            log.debug("记录在用状态失败: {}", e.getMessage());
+        }
         String[] serviceIds = parseServiceName(flowDataList.getN());
         String forwardId = serviceIds[0];
         String userId = serviceIds[1];
