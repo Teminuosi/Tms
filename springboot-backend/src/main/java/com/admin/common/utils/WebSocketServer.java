@@ -442,7 +442,7 @@ public class WebSocketServer extends TextWebSocketHandler {
                             }
                         }
                     } catch (Exception e) {
-                        log.info("处理响应消息失败: {}", e.getMessage(), e);
+                        log.info("处理响应消息失败: {}", LogRedact.redact(e.getMessage()), LogRedact.safe(e));
                     }
                 } else {
                     log.info("收到消息: {}", LogRedact.redact(decryptedPayload));
@@ -495,7 +495,7 @@ public class WebSocketServer extends TextWebSocketHandler {
                 }
             }
         } catch (Exception e) {
-            log.info("处理WebSocket消息时发生异常: {}", e.getMessage(), e);
+            log.info("处理WebSocket消息时发生异常: {}", LogRedact.redact(e.getMessage()), LogRedact.safe(e));
         }
     }
 
@@ -656,7 +656,7 @@ public class WebSocketServer extends TextWebSocketHandler {
             }
 
         } catch (Exception e) {
-            log.info("建立连接时发生异常: {}", e.getMessage(), e);
+            log.info("建立连接时发生异常: {}", LogRedact.redact(e.getMessage()), LogRedact.safe(e));
             // 异常情况下，确保清理会话
             try {
                 String id = session.getAttributes().get("id").toString();
@@ -729,7 +729,7 @@ public class WebSocketServer extends TextWebSocketHandler {
             sessionLocks.remove(sessionId);
 
         } catch (Exception e) {
-            log.info("关闭连接时发生异常: {}", e.getMessage(), e);
+            log.info("关闭连接时发生异常: {}", LogRedact.redact(e.getMessage()), LogRedact.safe(e));
         }
     }
 
@@ -851,7 +851,7 @@ public class WebSocketServer extends TextWebSocketHandler {
                 log.info("节点 {} 响应超时，可能存在连接问题", node_id);
             } else {
                 result.setMsg("发送消息失败: " + e.getMessage());
-                log.info("发送消息到节点 {} 失败: {}", node_id, e.getMessage(), e);
+                log.info("发送消息到节点 {} 失败: {}", node_id, LogRedact.redact(e.getMessage()), LogRedact.safe(e));
             }
             return result;
         }
