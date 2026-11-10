@@ -1,6 +1,7 @@
 package com.admin.controller;
 
 import com.admin.common.aop.LogAnnotation;
+import com.admin.common.aop.LogRedact;
 import com.admin.common.dto.FlowDto;
 import com.admin.common.dto.GostConfigDto;
 import com.admin.common.lang.R;
@@ -211,7 +212,8 @@ public class FlowController extends BaseController {
             }
         } catch (Exception e) {
             // 解析失败，可能是非加密格式，直接返回原始数据
-            log.info("数据未加密或解密失败，使用原始数据: {}", e.getMessage());
+            // fastjson 的解析异常消息带原文,打码再打
+            log.info("数据未加密或解密失败，使用原始数据: {}", LogRedact.redact(e.getMessage()));
         }
 
         return rawData;

@@ -525,7 +525,7 @@ public class WebSocketServer extends TextWebSocketHandler {
             }
         } catch (Exception e) {
             // 解析失败，可能是非加密格式，直接返回原始数据
-            log.info("WebSocket消息未加密或解密失败，使用原始数据: {}", e.getMessage());
+            log.info("WebSocket消息未加密或解密失败，使用原始数据: {}", LogRedact.redact(e.getMessage()));
         }
         
         return payload;

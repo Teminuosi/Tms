@@ -87,16 +87,58 @@ class LogRedactTest {
 
     @Test
     void linkCredentialMasked() {
-        String out = LogRedact.redact("{\"link\":\"trojan://pa55w0rd@1.2.3.4:443?sni=a#hk\"}");
+        String out = LogRedact.redact("{\"remark\":\"trojan://pa55w0rd@1.2.3.4:443?sni=a#hk\"}");
         assertFalse(out.contains("pa55w0rd"), out);
         assertTrue(out.contains("1.2.3.4:443"), out);
-        String esc = LogRedact.redact("{\"link\":\"trojan:\\/\\/pw0rd@1.2.3.4:443\"}");
+        String esc = LogRedact.redact("{\"remark\":\"trojan:\\/\\/pw0rd@1.2.3.4:443\"}");
         assertFalse(esc.contains("pw0rd"), esc);
         String vm = LogRedact.redact("vmess://eyJ2IjoiMiIsImlkIjoiYWJjIn0= 和 ss://YWVzLTI1Ni1nY206cGFzcw==#hk");
         assertFalse(vm.contains("eyJ2IjoiMiIsImlkIjoiYWJjIn0"), vm);
         assertFalse(vm.contains("YWVzLTI1Ni1nY206cGFzcw"), vm);
         assertTrue(vm.contains("#hk"), vm);
         assertEquals("见 https://example.com/a?b=1", LogRedact.redact("见 https://example.com/a?b=1"));
+        assertEquals("见 https://example.com", LogRedact.redact("见 https://example.com")); // 没截断时结尾的普通网址不动
+    }
+
+    @Test
+    void landingLinkFieldMaskedWhatever() {
+        // 落地链接 /create /update 带 @LogAnnotation:链接整段就是凭据,不管什么格式都整段遮
+        String[] links = {
+                "ss://MjAyMi1ibGFrZTMtYWVzLTEyOC1nY206YWJj/ZGVm+Z2hp@1.2.3.4:443",
+                "user:LEAK1@1.2.3.4:1080",
+                "1.2.3.4:1080:user:LEAK2",
+        };
+        for (String l : links) {
+            String out = LogRedact.redact("{\"link\":\"" + l + "\",\"client_link\":\"" + l + "\"}");
+            assertFalse(out.contains("LEAK") || out.contains("ZGVm") || out.contains("MjAy"), out);
+        }
+        // 不在 link 字段里的标准 base64 ss 链接(带 /)也要遮
+        String bare = LogRedact.redact("收到 ss://MjAyMi1ibGFrZTMtYWVzLTEyOC1nY206YWJj/ZGVm+Z2hp@1.2.3.4:443 了");
+        assertFalse(bare.contains("ZGVm") || bare.contains("MjAy"), bare);
+    }
+
+    @Test
+    void truncationBoundaryDoesNotLeakLinkCredential() {
+        String secret = "SuperSecretPassw0rd";
+        for (String scheme : new String[]{"trojan://", "trojan:\\/\\/"}) {
+            String link = "{\"x\":\"" + scheme + secret + "@1.2.3.4:443\"}";
+            for (int cut = 0; cut <= link.length(); cut++) {
+                StringBuilder sb = new StringBuilder();
+                while (sb.length() < LogRedact.MAX_LEN - cut) sb.append(' ');
+                sb.setLength(LogRedact.MAX_LEN - cut);
+                String out = LogRedact.redact(sb + link + " tail-padding-to-force-truncation");
+                for (int k = 6; k <= secret.length(); k++) {
+                    assertFalse(out.contains(secret.substring(0, k)), "cut=" + cut + " 漏出: " + out.substring(Math.max(0, out.length() - 120)));
+                }
+            }
+        }
+    }
+
+    @Test
+    void digitKeysAndObjectValuesMasked() {
+        String out = LogRedact.redact("{\"password2\":\"D1\",\"token_v2\":\"D2\",\"secret\":{\"a\":\"D3\"},\"n\":1}");
+        for (String s : new String[]{"D1", "D2", "D3"}) assertFalse(out.contains(s), out);
+        assertTrue(out.contains("\"n\":1"), out);
     }
 
     @Test
@@ -137,6 +179,8 @@ class LogRedactTest {
         t.join(5000);
         assertNull(err[0], String.valueOf(err[0]));
         assertNotNull(out[0]);
+        // redact 吞掉所有错误走兜底,兜底串里也没有 AAAA —— 必须核实没走兜底,否则栈溢出也会"通过"
+        assertFalse(out[0].startsWith("[日志打码失败"), out[0]);
         assertFalse(out[0].contains("AAAAAAAAAA"), "私钥没打码");
         assertFalse(out[0].contains("BBBBBBBBBB"), "转义 JSON 里的密钥没打码");
     }

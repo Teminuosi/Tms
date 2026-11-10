@@ -20,17 +20,20 @@ public final class LogRedact {
     /** 超过这个长度先截断再打码(日志本来也没人看几十 KB 的一行) */
     static final int MAX_LEN = 64 * 1024;
 
-    /** 键名里带这些词就算秘密(不分大小写,含 tg_token / private_key / obfs-password 这类写法) */
+    /**
+     * 键名里带这些词就算秘密(不分大小写,含 tg_token / private_key / obfs-password 这类写法)。
+     * link:落地 / 客户端链接整段就是凭据,格式五花八门(标准 base64 的 ss、住宅 socks 裸格式 user:pw@ip:port …),整段遮
+     */
     private static final String KEYWORD =
-            "(?:secret|passw(?:or)?d|pwd|token|private[_-]?key|psk|api[_-]?key|uuid)";
-    /** 键名:前后各最多 40 个字母 / 下划线 / 连字符,限长防回溯 */
-    private static final String KEY = "[A-Za-z_-]{0,40}?" + KEYWORD + "[A-Za-z_-]{0,40}";
+            "(?:secret|passw(?:or)?d|pwd|token|private[_-]?key|psk|api[_-]?key|uuid|link)";
+    /** 键名:前面最多 40 个字母 / 下划线 / 连字符,后面还允许数字(password2、token_v2),限长防回溯 */
+    private static final String KEY = "[A-Za-z_-]{0,40}?" + KEYWORD + "[A-Za-z0-9_-]{0,40}";
 
     private static final int CI = Pattern.CASE_INSENSITIVE;
 
     /** JSON 字段:"secret":"..." / "tokens":[...] / "token":123;值被截断没收尾也照样遮 */
     private static final Pattern JSON_FIELD = Pattern.compile(
-            "(\"" + KEY + "\"\\s*:\\s*)(?:\"(?:[^\"\\\\]++|\\\\.)*+(?:\"|\\z)|\\[[^\\]]*+(?:\\]|\\z)|-?\\d++(?:\\.\\d++)?)", CI);
+            "(\"" + KEY + "\"\\s*:\\s*)(?:\"(?:[^\"\\\\]++|\\\\.)*+(?:\"|\\z)|\\[[^\\]]*+(?:\\]|\\z)|\\{[^{}]*+(?:\\}|\\z)|-?\\d++(?:\\.\\d++)?)", CI);
 
     /** 字符串里再转义过一层的 JSON:\"secret\":\"...\" */
     private static final Pattern ESC_JSON_FIELD = Pattern.compile(
@@ -48,9 +51,13 @@ public final class LogRedact {
     private static final Pattern LINK_CRED = Pattern.compile(
             "(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]{0,15}:(?:\\\\?/){2})[^@/\\s\"\\\\]{1,1024}+@");
 
-    /** 整段 base64 就是凭据的链接:vmess://base64、老式 ss://base64 */
+    /** 只在截断过时用:截断点落在 scheme:// 和 @ 之间,前半截凭据也要遮(没截断时结尾的普通网址不能动) */
+    private static final Pattern LINK_CRED_TAIL = Pattern.compile(
+            "(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]{0,15}:(?:\\\\?/){2})[^@/\\s\"\\\\]{1,1024}+\\z");
+
+    /** 整段 base64 就是凭据的链接:vmess://base64、老式 ss://base64、标准 base64(带 /)的 ss://xxx@host */
     private static final Pattern B64_LINK = Pattern.compile(
-            "(?<![A-Za-z0-9+.-])((?:vmess|ssr?):(?:\\\\?/){2})[A-Za-z0-9+/=_-]{8,}+(?!@)", CI);
+            "(?<![A-Za-z0-9+.-])((?:vmess|ssr?):(?:\\\\?/){2})[A-Za-z0-9+/=_-]{8,}+", CI);
 
     public static String redact(String s) {
         if (s == null || s.isEmpty()) {
@@ -67,6 +74,9 @@ public final class LogRedact {
             out = KV.matcher(out).replaceAll("$1***");
             out = INSTALL_SECRET.matcher(out).replaceAll("$1***");
             out = LINK_CRED.matcher(out).replaceAll("$1***@");
+            if (!tail.isEmpty()) {
+                out = LINK_CRED_TAIL.matcher(out).replaceAll("$1***");
+            }
             out = B64_LINK.matcher(out).replaceAll("$1***");
             return out + tail;
         } catch (Throwable t) {

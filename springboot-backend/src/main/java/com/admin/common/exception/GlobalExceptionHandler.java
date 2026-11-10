@@ -1,5 +1,6 @@
 package com.admin.common.exception;
 
+import com.admin.common.aop.LogRedact;
 import com.admin.common.lang.R;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.catalina.connector.ClientAbortException;
@@ -34,7 +35,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(value = Exception.class)
     public R Exception(Exception e){
-        log.info("异常：----------------{}", e.getMessage());
+        log.info("异常：----------------{}", LogRedact.redact(e.getMessage()));
         return R.err(-2, e.getMessage());
     }
 
