@@ -150,8 +150,12 @@ public class FlowController extends BaseController {
     @LogAnnotation(quiet = true)
     public String uploadFlowData(@RequestBody String rawData, String secret) {
         // 1. 验证节点权限
+        // 不认识的密钥不能回 "ok":gost 只有收到 "ok" 才把流量计数清零(go-gost/x/service/service.go observeStats),
+        // 回 ok 等于让它把这段流量悄悄扔掉。回别的,它会留着计数,等这条转发下一次有流量时连同新流量一起再报
+        // (不会自己定时重报;这期间 gost 重启就丢)—— 比如换面板机切换时密钥还没对上,对上之后流量照样补进来
+        // (2026-11-10,换面板机 1B 核源码 + Docker 实测)
         if (!isValidNode(secret)) {
-            return SUCCESS_RESPONSE;
+            return "unknown node";
         }
 
         // 2. 尝试解密数据
