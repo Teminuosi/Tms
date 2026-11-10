@@ -1,6 +1,7 @@
 package com.admin.common.utils;
 
 
+import com.admin.common.aop.LogRedact;
 import com.admin.common.dto.GostConfigDto;
 import com.admin.common.dto.GostDto;
 import com.admin.common.task.CheckGostConfigAsync;
@@ -408,7 +409,8 @@ public class WebSocketServer extends TextWebSocketHandler {
                     // 先发送确认消息
                     sendToUser(session, "{\"type\":\"call\"}", nodeSecret);
                 }else if (decryptedPayload.contains("requestId")) {
-                    log.info("收到消息: {}", decryptedPayload);
+                    // 打码:节点回的 GenerateRealityKeypair 里有私钥
+                    log.info("收到消息: {}", LogRedact.redact(decryptedPayload));
                     // 处理命令响应消息
                     try {
                         JSONObject responseJson = JSONObject.parseObject(decryptedPayload);
@@ -443,7 +445,7 @@ public class WebSocketServer extends TextWebSocketHandler {
                         log.info("处理响应消息失败: {}", e.getMessage(), e);
                     }
                 } else {
-                    log.info("收到消息: {}", decryptedPayload);
+                    log.info("收到消息: {}", LogRedact.redact(decryptedPayload));
                 }
 
                 // 如果是节点类型，转发消息给其他会话
@@ -836,7 +838,7 @@ public class WebSocketServer extends TextWebSocketHandler {
             sendToUser(nodeSession, data.toJSONString(), nodeSecret);
             GostDto result = future.get(10, TimeUnit.SECONDS);
             
-            log.info("成功发送消息到节点 {} 并收到响应: {}", node_id, result.getMsg());
+            log.info("成功发送消息到节点 {} 并收到响应: {}", node_id, LogRedact.redact(result.getMsg()));
             return result;
             
         } catch (Exception e) {

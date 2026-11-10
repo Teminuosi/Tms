@@ -149,7 +149,8 @@ public class LogAspect {
             );
             
             // 打印单条完整异常日志
-            log.info(errorMessage, ex);
+            // 不把 ex 交给 logback:堆栈第一行是没打码的 ex.getMessage()。只打异常类型 + 打过码的消息
+            log.info(errorMessage + " 异常类型:[" + (ex != null ? ex.getClass().getName() : "") + "]");
         } catch (Exception e) {
             log.info("记录异常日志时出错: {}", e.getMessage());
         }
