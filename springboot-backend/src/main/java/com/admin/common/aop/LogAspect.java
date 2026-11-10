@@ -78,10 +78,11 @@ public class LogAspect {
         
 
         // 获取请求参数
-        String requestParams = getRequestParams(joinPoint);
-        
+        // 参数和返回值都先打码(节点密钥、密码、令牌、私钥):docker logs 谁都能看
+        String requestParams = LogRedact.redact(getRequestParams(joinPoint));
+
         // 获取返回参数
-        String responseParams = returnValue != null ? JSON.toJSONString(returnValue) : "无返回值";
+        String responseParams = returnValue != null ? LogRedact.redact(JSON.toJSONString(returnValue)) : "无返回值";
         
         // 合并为一条完整的日志信息
         String logMessage = String.format(
@@ -137,10 +138,10 @@ public class LogAspect {
 
             
             // 获取请求参数
-            String requestParams = getRequestParams(joinPoint);
-            
+            String requestParams = LogRedact.redact(getRequestParams(joinPoint));
+
             // 获取异常信息
-            String exceptionMsg = ex != null ? ex.getMessage() : "未知异常";
+            String exceptionMsg = ex != null ? LogRedact.redact(ex.getMessage()) : "未知异常";
             
             // 合并为一条完整的异常日志信息
             String errorMessage = String.format(
