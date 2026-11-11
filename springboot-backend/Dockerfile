@@ -22,8 +22,13 @@ ENV LANG=en_US.UTF-8
 ENV LANGUAGE=en_US:en
 ENV LC_ALL=en_US.UTF-8
 
-RUN sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list \
-    && sed -i 's/security.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list \
+# Ubuntu 24.04 起源配置在 /etc/apt/sources.list.d/ubuntu.sources(deb822),老的 sources.list 只剩注释,
+# 只改它等于没换源(2026-11-11 GitHub 构建机解析不了 *.ubuntu.com、连续失败才发现)。两处都换;arm64 走 ports
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do \
+        if [ -f "$f" ]; then sed -i -e 's#http://archive.ubuntu.com#http://mirrors.ustc.edu.cn#g' \
+            -e 's#http://security.ubuntu.com#http://mirrors.ustc.edu.cn#g' \
+            -e 's#http://ports.ubuntu.com#http://mirrors.ustc.edu.cn#g' "$f"; fi; \
+    done \
     && apt-get update \
     && apt-get install -y --no-install-recommends fontconfig fonts-dejavu \
     && apt-get clean \
