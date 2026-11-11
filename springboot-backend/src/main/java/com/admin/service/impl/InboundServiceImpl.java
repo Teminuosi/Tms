@@ -938,6 +938,33 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
     static void addClashProxies(List<java.util.Map<String, Object>> proxies, java.util.Set<String> usedNames,
                                 Inbound in, InboundUser iu, Node node, Forward forward, String remark,
                                 Tunnel tunnel, List<Runnable> pendingV6) {
+        String v6Only = listensV6(in, tunnel) && v6OnlySub(node) ? dualV6Host(node) : null;
+        if (v6Only != null) {
+            // 「只出 v6」:这里先占位(不占任何名字),等整份订阅的 v4 名字全部占好以后,
+            // 再按「原名 + v6」取名填进占位 —— 和双栈一样,永远不会改动别的 v4 节点的名字。
+            // clashProxy 返回 null 只取决于协议(和地址无关),先用原名试一次,出不了就和以前一样整条跳过
+            if (clashProxy(remark, in, iu, v6Only, forward) == null) {
+                return;
+            }
+            java.util.Map<String, Object> slot = new java.util.HashMap<>();
+            proxies.add(slot);
+            pendingV6.add(() -> {
+                java.util.Map<String, Object> p6 = clashProxy(
+                        ClashUtil.uniqueName(remark + " v6", usedNames), in, iu, v6Only, forward);
+                for (int i = 0; i < proxies.size(); i++) {
+                    if (proxies.get(i) == slot) {
+                        // 预检过同一协议 / 地址,p6 不会是 null;万一以后 toProxy 改了,拿掉占位,别留空条目
+                        if (p6 == null) {
+                            proxies.remove(i);
+                        } else {
+                            proxies.set(i, p6);
+                        }
+                        break;
+                    }
+                }
+            });
+            return;
+        }
         java.util.Map<String, Object> proxy = clashProxy(ClashUtil.uniqueName(remark, usedNames), in, iu, linkHost(node), forward);
         if (proxy == null) {
             return;
@@ -1028,14 +1055,28 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
         return clientLink(in, iu, linkHost(node), forward, nm.text, nm.userSet);
     }
 
-    /** 订阅里一条入站的链接:先正常那条;节点开了「订阅出 IPv6」且「双栈都出」时紧跟一条 v6 的 */
+    /**
+     * 订阅里一条入站的链接:先正常那条;节点开了「订阅出 IPv6」且「双栈都出」时紧跟一条 v6 的。
+     * 节点选了「只出 v6」(ipv6_sub=2)且这条确实能走 v6 时只出 v6 那条(名字照样带「 v6」,车主一看就知道);
+     * v6 用不了(没在听 [::] / v6 地址被清掉)就退回只出 v4 那条,订阅不会空
+     */
     static void addSubLinks(List<String> links, Inbound in, InboundUser iu, Node node, Forward forward, SubNames.Name nm,
                             Tunnel tunnel) {
+        String v6 = listensV6(in, tunnel) ? dualV6Host(node) : null;
+        if (v6 != null && v6OnlySub(node)) {
+            String l6 = clientLink(in, iu, v6, forward, nm.text + " v6", nm.userSet);
+            if (l6 != null && !l6.isEmpty()) {
+                links.add(l6);
+                return;
+            }
+        }
         String link = clientLink(in, iu, linkHost(node), forward, nm.text, nm.userSet);
         if (link != null && !link.isEmpty()) {
             links.add(link);
         }
-        String v6 = listensV6(in, tunnel) ? dualV6Host(node) : null;
+        if (v6OnlySub(node)) {
+            return; // 只出 v6 但 v6 那条出不了:上面已退回 v4,不再补 v6
+        }
         if (v6 != null) {
             String l6 = clientLink(in, iu, v6, forward, nm.text + " v6", nm.userSet);
             if (l6 != null && !l6.isEmpty()) {
@@ -1048,8 +1089,13 @@ public class InboundServiceImpl extends ServiceImpl<InboundMapper, Inbound> impl
      * 双栈额外那条用的 IPv6 地址(不带方括号;链接里的方括号由 SingboxUtil 各 build*Link 经 uriHost 加,
      * vmess 的 add 字段和 Clash 的 server 字段要的就是裸地址)。条件不满足返回 null,订阅逐字节不变。
      */
+    /** 节点选了「订阅只出 v6」(ipv6_sub=2;1 = v4 + v6 都出,0 = 只出 v4) */
+    static boolean v6OnlySub(Node node) {
+        return node != null && node.getIpv6Sub() != null && node.getIpv6Sub() == 2;
+    }
+
     static String dualV6Host(Node node) {
-        if (node == null || node.getIpv6Sub() == null || node.getIpv6Sub() != 1
+        if (node == null || node.getIpv6Sub() == null || (node.getIpv6Sub() != 1 && node.getIpv6Sub() != 2)
                 || node.getIpv6Dual() == null || node.getIpv6Dual() != 1 || node.getServerIpv6() == null) {
             return null;
         }

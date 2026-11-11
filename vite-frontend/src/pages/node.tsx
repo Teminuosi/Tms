@@ -35,7 +35,7 @@ interface Node {
   domain?: string;
   /** 公网 IPv6(管理员填或节点上报后确认) */
   serverIpv6?: string;
-  /** 订阅里每个协议多一条 v6 线路:0 关 1 开(只在 ipv6Dual=1 时生效) */
+  /** 订阅里出哪种线路:0 只 v4 / 1 v4 + v6 / 2 只 v6(v6 只在 ipv6Dual=1 时生效,否则只出 v4) */
   ipv6Sub?: number;
   /** 公网端口是否已改成 IPv4 和 IPv6 都收:0/1 */
   ipv6Dual?: number;
@@ -79,7 +79,7 @@ interface NodeForm {
   serverIp: string;
   domain: string;
   serverIpv6: string;
-  ipv6Sub: number; // 0 关 1 开
+  ipv6Sub: number; // 0 只 v4 / 1 v4 + v6 / 2 只 v6
   portSta: number;
   portEnd: number;
   http: number; // 0 关 1 开
@@ -496,7 +496,7 @@ export default function NodePage() {
       serverIp: node.serverIp || '',
       domain: node.domain || '',
       serverIpv6: node.serverIpv6 || '',
-      ipv6Sub: node.ipv6Sub === 1 ? 1 : 0,
+      ipv6Sub: node.ipv6Sub === 1 || node.ipv6Sub === 2 ? node.ipv6Sub : 0,
       portSta: node.portSta,
       portEnd: node.portEnd,
       http: typeof node.http === 'number' ? node.http : 1,
@@ -1022,8 +1022,9 @@ export default function NodePage() {
                       return null;
                     })()}
                     <div className="text-default-500">
-                      订阅加 IPv6 节点:{node.ipv6Sub === 1 ? '开' : '关'}
-                      {node.ipv6Sub === 1 && node.ipv6Dual !== 1 ? '(未开启 IPv6,暂不生效)' : ''}
+                      订阅里出:{node.ipv6Sub === 2 ? '只出 IPv6' : node.ipv6Sub === 1 ? 'IPv4 + IPv6' : '只出 IPv4'}
+                      {(node.ipv6Sub === 1 || node.ipv6Sub === 2) && (node.ipv6Dual !== 1 || !node.serverIpv6)
+                        ? (node.ipv6Dual !== 1 ? '(未开启 IPv6,暂时只出 IPv4)' : '(没有公网 IPv6 地址,暂时只出 IPv4)') : ''}
                       (在「编辑」里改)
                     </div>
                   </div>
@@ -1141,25 +1142,33 @@ export default function NodePage() {
                         variant="bordered"
                         description={`公网 IPv6,留空清除。节点上报的:${reported.length ? reported.join('、') : '没有(节点没上报公网 IPv6)'}`}
                       />
-                      <div className="flex items-start justify-between gap-3 px-1">
+                      <div className="px-1">
                         <div className="text-sm">
-                          <div>订阅加 IPv6 节点</div>
+                          <div>订阅里出哪种线路</div>
                           <div className="text-xs text-default-500 mt-0.5">
-                            车友订阅里每个协议多一条带 v6 的线路;车友网络没有 IPv6 时这些线路连不上。
-                            只有这台已开启 IPv6(卡片上的「开启 IPv6」)且填了公网 IPv6 时才生效
-                            {dual ? '' : ',当前未开启,打开也暂不生效'}。
+                            v6 线路名字后面都带「v6」;车友网络没有 IPv6 时 v6 线路连不上。
+                            只有这台已开启 IPv6(卡片上的「开启 IPv6」)且填了公网 IPv6 时 v6 才生效
+                            {dual ? '' : ',当前未开启,选了 v6 也暂时只出 IPv4'};「只出 IPv6」在 v6 用不了时自动退回只出 IPv4,订阅不会空。
                           </div>
                           {form.domain.trim() && (
                             <div className="text-xs text-warning-600 mt-0.5">
-                              注意:填了连接域名,但 v6 那条用的是裸 IPv6 地址,车友能直接看到这台机器的 IPv6。
+                              注意:填了连接域名,但 v6 线路用的是裸 IPv6 地址,车友能直接看到这台机器的 IPv6。
                             </div>
                           )}
                         </div>
-                        <Switch
-                          size="sm"
-                          isSelected={form.ipv6Sub === 1}
-                          onValueChange={(v) => setForm(prev => ({ ...prev, ipv6Sub: v ? 1 : 0 }))}
-                        />
+                        <div className="flex gap-2 mt-2">
+                          {[[0, '只出 IPv4'], [1, 'IPv4 + IPv6'], [2, '只出 IPv6']].map(([v, label]) => (
+                            <Button
+                              key={v as number}
+                              size="sm"
+                              variant={form.ipv6Sub === v ? 'solid' : 'flat'}
+                              color={form.ipv6Sub === v ? 'primary' : 'default'}
+                              onPress={() => setForm(prev => ({ ...prev, ipv6Sub: v as number }))}
+                            >
+                              {label as string}
+                            </Button>
+                          ))}
+                        </div>
                       </div>
                     </>
                   );

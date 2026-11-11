@@ -287,4 +287,68 @@ class SubIpv6DualTest {
             }
         }
     }
+
+    // ---- 只出 v6(ipv6_sub=2,粉丝要求 2026-11-11)----
+
+    @Test
+    void v6OnlyEmitsJustTheV6LinkNamedV6() {
+        for (String p : PROTOS) {
+            for (boolean us : new boolean[]{false, true}) {
+                List<String> l = links(p, node(2, 1, V6), us);
+                assertEquals(1, l.size(), p);
+                assertEquals(oldLink(p, V6, nm(p, us).text + " v6", us), l.get(0), p);
+            }
+        }
+    }
+
+    @Test
+    void v6OnlyFallsBackToV4WhenV6Unusable() {
+        for (String p : PROTOS) {
+            String v4Only = String.join("\n", links(p, node(0, 1, V6), false));
+            // 没开双栈监听 / v6 地址被清掉 / 这条转发不在听 [::]:退回只出 v4,和「只出 v4」逐字节一样
+            assertEquals(v4Only, String.join("\n", links(p, node(2, 0, V6), false)), p);
+            assertEquals(v4Only, String.join("\n", links(p, node(2, 1, null), false)), p);
+            assertEquals(v4Only, String.join("\n", links(p, node(2, 1, V6), false, tun("0.0.0.0", "0.0.0.0"))), p);
+        }
+    }
+
+    @Test
+    void clashV6OnlyKeepsOrderAndNeverRenamesV4() {
+        Node a = node(2, 1, V6);
+        Node other = node(null, null, null);
+        // 车友另有一个 v4 节点就叫「X v6」:只出 v6 的那条不能抢走它的名字
+        List<Map<String, Object>> got = clashMany(new Object[][]{{a, "X"}, {other, "X v6"}, {a, "Y"}});
+        assertEquals(3, got.size());
+        assertEquals(V6, got.get(0).get("server"));
+        assertEquals("203.0.113.5", got.get(1).get("server"));
+        assertEquals("X v6", got.get(1).get("name"));
+        assertTrue(((String) got.get(0).get("name")).startsWith("X v6 "), (String) got.get(0).get("name"));
+        assertEquals(V6, got.get(2).get("server"));
+        assertEquals("Y v6", got.get(2).get("name"));
+        // v6 用不了:退回 v4,名字不带 v6,和「只出 v4」逐字节一样(没开双栈 / v6 地址被清 / 隧道没在听 [::])
+        String[] ps = {"vless", "vmess", "hysteria2", "shadowsocks", "vless"};
+        String v4Only = ClashUtil.buildConfig(clash(node(0, 1, V6), ps));
+        assertEquals(v4Only, ClashUtil.buildConfig(clash(node(2, 0, V6), ps)));
+        assertEquals(v4Only, ClashUtil.buildConfig(clash(node(2, 1, null), ps)));
+        assertEquals(v4Only, ClashUtil.buildConfig(clash(node(2, 1, V6), tun("0.0.0.0", "0.0.0.0"), ps)));
+    }
+
+    @Test
+    void clashMixedV6OnlyAndDualKeepsOrderAndUniqueNames() {
+        Node only = node(2, 1, V6);
+        Node dual = node(1, 1, V6);
+        Node v4 = node(0, 1, V6);
+        List<Map<String, Object>> got = clashMany(new Object[][]{{only, "A"}, {dual, "B"}, {v4, "C"}, {only, "A"}});
+        // 只 v6 的 A、双栈的 B(v4 + 紧跟 v6)、只 v4 的 C、又一条只 v6 的 A(重名去重)
+        assertEquals(5, got.size());
+        Object[] servers = got.stream().map(p -> p.get("server")).toArray();
+        assertArrayEquals(new Object[]{V6, "203.0.113.5", V6, "203.0.113.5", V6}, servers);
+        assertEquals("A v6", got.get(0).get("name"));
+        assertEquals("B", got.get(1).get("name"));
+        assertEquals("B v6", got.get(2).get("name"));
+        assertEquals("C", got.get(3).get("name"));
+        assertTrue(((String) got.get(4).get("name")).startsWith("A v6 "), (String) got.get(4).get("name"));
+        java.util.Set<String> all = new java.util.HashSet<>();
+        for (Map<String, Object> p : got) assertTrue(all.add((String) p.get("name")), "重名 " + p.get("name"));
+    }
 }

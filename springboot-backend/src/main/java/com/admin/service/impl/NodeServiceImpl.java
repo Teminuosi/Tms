@@ -145,8 +145,9 @@ public class NodeServiceImpl extends ServiceImpl<NodeMapper, Node> implements No
             }
         }
         Integer v6Sub = nodeUpdateDto.getIpv6Sub();
-        if (v6Sub != null && v6Sub != 0 && v6Sub != 1) {
-            return R.err("ipv6_sub 只能是 0 或 1");
+        // 0 只出 v4 / 1 v4 + v6 都出 / 2 只出 v6(v6 用不了时订阅自动退回 v4)
+        if (v6Sub != null && v6Sub != 0 && v6Sub != 1 && v6Sub != 2) {
+            return R.err("ipv6_sub 只能是 0、1 或 2");
         }
 
         //1.1 如果节点在线 且传入更新的 http/tls/socks 任意一项与数据库不一致，则通过 WS 通知节点更新设置
