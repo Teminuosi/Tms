@@ -63,12 +63,30 @@ export default function MySubPage() {
   const accountDisabled = !!account && account.status !== undefined && account.status !== 1;
   const accountExpired = !!account?.expTime && account.expTime > 0 && account.expTime <= Date.now();
 
+  // 全部线路合计(2026-11-13 车主留言:给车友开了 4 条线路,车友只能看到每条各自的限额,看不到总量)。
+  // 数字就是下面各条线路相加 —— 不用账号上的「总流量」:协议 / 中转线路不按那个数扣量,显示出来是个不管用的上限。
+  const totalUsed = lines.reduce((n: number, l: any) => n + (l.flow || 0), 0);
+  const totalQuotaGb = lines.reduce((n: number, l: any) => n + (l.quotaGb > 0 ? l.quotaGb : 0), 0);
+  const unlimitedCount = lines.filter((l: any) => !(l.quotaGb > 0)).length;
+
   return (
     <div className="p-4 space-y-4 max-w-4xl">
       <div className="flex items-baseline gap-3">
         <h1 className="text-xl font-bold">我的订阅</h1>
         <span className="text-sm text-default-500">共 {lines.length} 条线路,每条各自独立</span>
       </div>
+
+      {!loading && lines.length > 1 && (
+        <div className="text-sm">
+          <span className="text-default-500 text-xs">全部线路合计 </span>
+          <span className="font-semibold">已用 {fmtGB(totalUsed)}</span>
+          <span className="text-default-400">
+            {unlimitedCount === lines.length
+              ? " / 不限"
+              : ` / ${totalQuotaGb} GB${unlimitedCount > 0 ? `(另有 ${unlimitedCount} 条不限)` : ""}`}
+          </span>
+        </div>
+      )}
 
       {(accountDisabled || accountExpired) && (
         <Card className="border border-danger/40 bg-danger/5">
