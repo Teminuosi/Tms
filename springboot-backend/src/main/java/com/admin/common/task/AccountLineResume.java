@@ -187,7 +187,12 @@ public class AccountLineResume {
                         }
                     }
                 } catch (Exception e) {
-                    accountPauseStore.markRetrying(rec.forwardId);
+                    // 节点被删时 nodeService 直接抛「节点不存在」,不走返回值 —— 一样算永久失败
+                    if (permanentFailure(e.getMessage())) {
+                        accountPauseStore.remove(rec.forwardId);
+                    } else {
+                        accountPauseStore.markRetrying(rec.forwardId);
+                    }
                     if (loud) {
                         log.warn("账号放开后恢复转发[{}]失败: {}", f.getId(), e.getMessage());
                     } else {

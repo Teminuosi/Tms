@@ -285,4 +285,15 @@ class AccountLineResumeTest {
         r.resumeIfAccountOk(7L, false);
         verify(store).clearRetrying(7L);
     }
+
+    @Test
+    void thrownNodeMissingIsPermanent() {
+        when(userService.getById(7L)).thenReturn(user(0L, 0, 0L, 1));
+        when(forwardService.resumeForwardAsSystem(101L)).thenThrow(new RuntimeException("节点不存在"));
+        when(forwardService.resumeForwardAsSystem(501L)).thenThrow(new RuntimeException("connection reset"));
+        r.resumeIfAccountOk(7L, false);
+        verify(store).remove(101L);
+        verify(store, never()).remove(501L);
+        verify(store).markRetrying(501L);
+    }
 }
