@@ -113,6 +113,11 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     @Lazy
     private com.admin.mapper.InboundLineMapper inboundLineMapper;
     
+    /** 账号总闸放开后把协议/中转线路拉起来 */
+    @Resource
+    @Lazy
+    private com.admin.common.task.AccountLineResume accountLineResume;
+
     @Resource
     @Lazy
     private TunnelService tunnelService;
@@ -241,11 +246,13 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         }
 
         // 4. 构建更新实体并保存
+        User before = this.getById(userUpdateDto.getId());
         User updateUser = buildUpdateUserEntity(userUpdateDto);
         boolean result = this.updateById(updateUser);
-        
+
         if (result) {
-            // 5. 处理到期时间延时任务
+            // 5. 账号总闸(到期 / 停用 / 总流量跑满)这次被放开了 → 把只因账号停掉的协议/中转线路拉起来
+            resumeAccountLinesIfUnblocked(before);
             return R.ok(SUCCESS_UPDATE_MSG);
         } else {
             return R.err(ERROR_UPDATE_FAILED);
@@ -363,9 +370,13 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         if (resetFlowDto.getType() == 1){ // 清零账号流量
             User user = this.getById(resetFlowDto.getId());
             if (user == null) return R.err(ERROR_USER_NOT_FOUND);
+            User before = new User();
+            BeanUtils.copyProperties(user, before);
             user.setInFlow(0L);
             user.setOutFlow(0L);
             this.updateById(user);
+            // 清零后账号总流量不再跑满 → 把只因账号停掉的协议/中转线路拉起来
+            resumeAccountLinesIfUnblocked(before);
         }else { // 清零隧道流量
             UserTunnel tunnel = userTunnelService.getById(resetFlowDto.getId());
             if (tunnel == null) return R.err("隧道不存在");
@@ -377,6 +388,24 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     }
 
     // ========== 私有辅助方法 ==========
+
+    /**
+     * 改之前账号被总闸挡着、改之后放开了,才去拉线路;只改名字 / 密码时什么都不动。
+     * 吞掉一切异常:车友已经改成功了,恢复失败只记日志。
+     */
+    private void resumeAccountLinesIfUnblocked(User before) {
+        try {
+            if (before == null || before.getId() == null) {
+                return;
+            }
+            User after = this.getById(before.getId());
+            if (com.admin.common.task.AccountLineResume.shouldTryResume(before, after, System.currentTimeMillis())) {
+                accountLineResume.resumeIfAccountOk(before.getId());
+            }
+        } catch (Exception e) {
+            log.warn("改车友后恢复线路失败(用户 {}): {}", before == null ? null : before.getId(), e.getMessage());
+        }
+    }
 
 
     /**

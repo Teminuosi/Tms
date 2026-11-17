@@ -1,5 +1,6 @@
 package com.admin.common.task;
 
+import com.admin.common.utils.AccountLimits;
 import com.admin.common.utils.AutoPauseSkips;
 import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
@@ -50,6 +51,9 @@ public class ResetFlowAsync {
 
     @Resource
     InboundLineMapper inboundLineMapper;
+
+    @Resource
+    AccountLineResume accountLineResume;
 
     /**
      * 每天0点执行流量重置任务
@@ -188,7 +192,27 @@ public class ResetFlowAsync {
             if (ius == null || ius.isEmpty()) {
                 return;
             }
-            int cleared = 0, resumed = 0;
+            long now = System.currentTimeMillis();
+
+            // 0) 清零之前先认出「因为线路自己跑满才停」的线路(status=0、没到期、清零前用量 >= 配额)。
+            //    以前这里把所有 status=0 且没到期的线路一律改回 1,车主手动停的也被月初复活了;
+            //    只是转发那一步在定时任务线程里拿不到请求、resumeForward 空指针,从来没真拉起来过,
+            //    结果是界面显示正常、实际连不上。现在只认跑满的。
+            List<Long> depletedLineIds = new java.util.ArrayList<>();
+            java.util.Map<String, List<Forward>> byLine = accountLineResume.lineForwards(user.getId());
+            for (InboundLine line : inboundLineMapper.selectList(new QueryWrapper<InboundLine>()
+                    .eq("user_id", user.getId()).eq("status", 0))) {
+                if (AccountLimits.expired(line.getExpTime(), now)) {
+                    continue;
+                }
+                List<Forward> fs = byLine.get(AccountLineResume.key(line.getNodeId(), line.getLandingId()));
+                long used = fs == null ? 0L : AccountLineResume.usedBytes(fs);
+                if (AccountLimits.lineDepleted(line.getFlow(), used)) {
+                    depletedLineIds.add(line.getId());
+                }
+            }
+
+            int cleared = 0;
             for (InboundUser iu : ius) {
                 if (iu.getGostForwardId() == null) {
                     continue;
@@ -202,30 +226,21 @@ public class ResetFlowAsync {
                 fw.eq("id", f.getId()).setSql("in_flow = 0, out_flow = 0");
                 forwardService.update(null, fw);
                 cleared++;
-
-                // 2) 上个周期被停掉的,重新拉起来
-                if (f.getStatus() != null && f.getStatus() == 0) {
-                    try {
-                        forwardService.resumeForward(f.getId());
-                        resumed++;
-                    } catch (Exception e) {
-                        log.info("恢复转发[{}]失败: {}", f.getId(), e.getMessage());
-                    }
-                }
             }
-            // 3) 线路本身的停用标记也要清掉,不然界面一直显示"已停用"。
-            //    但只恢复「跑满配额」停的,已经到期的线路不能跟着复活 ——
-            //    否则界面显示正常、实际转发还是停的(resumeForward 有到期守卫),
-            //    车友看着能用却连不上。exp_time 为 0/NULL 表示永久。
-            if (cleared > 0) {
-                long now = System.currentTimeMillis();
+            // 2) 跑满停的线路改回 1。已经到期的线路不能跟着复活(上面已排除),车主手动停的也不动。
+            if (cleared > 0 && !depletedLineIds.isEmpty()) {
                 UpdateWrapper<InboundLine> lw = new UpdateWrapper<>();
-                lw.eq("user_id", user.getId()).eq("status", 0)
-                  .and(w -> w.isNull("exp_time").or().le("exp_time", 0).or().gt("exp_time", now))
+                lw.in("id", depletedLineIds).eq("status", 0)
                   .set("status", 1)
                   .set("updated_time", now);
                 inboundLineMapper.update(null, lw);
-                log.info("用户[{}]协议线路流量已重置:清零 {} 条转发,恢复 {} 条", user.getUser(), cleared, resumed);
+            }
+            // 3) 转发跟着线路走:status=1、按线路自己的判据也不该停的线路,把停着的转发拉起来
+            //    (含上个周期因账号总流量跑满被停的)。账号此时仍到期 / 停用 / 跑满就一条都不拉。
+            int resumed = cleared > 0 ? accountLineResume.resumeIfAccountOk(user.getId()) : 0;
+            if (cleared > 0) {
+                log.info("用户[{}]协议线路流量已重置:清零 {} 条转发,恢复线路 {} 条,恢复转发 {} 条",
+                        user.getUser(), cleared, depletedLineIds.size(), resumed);
             }
         } catch (Exception e) {
             log.info("重置协议线路流量失败(用户 {}): {}", user.getUser(), e.getMessage());

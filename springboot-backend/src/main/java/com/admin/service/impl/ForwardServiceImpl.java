@@ -533,6 +533,19 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     }
 
     @Override
+    public R resumeForwardAsSystem(Long id) {
+        Forward f = this.getById(id);
+        // 守卫和 resumeForward 一字不差
+        if (f != null && f.getExpTime() != null && f.getExpTime() > 0
+                && f.getExpTime() < System.currentTimeMillis()) {
+            return R.err("该转发已到期,无法恢复");
+        }
+        // 定时任务线程没有请求,getCurrentUserInfo 会空指针 —— 直接按管理员身份走同一套流程
+        return changeForwardStatus(id, FORWARD_STATUS_ACTIVE, "恢复", "ResumeService",
+                new UserInfo(null, ADMIN_ROLE_ID, "system"));
+    }
+
+    @Override
     public R forceDeleteForward(Long id) {
         // 1. 获取当前用户信息
         UserInfo currentUser = getCurrentUserInfo();
@@ -558,8 +571,10 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
      */
     private R changeForwardStatus(Long id, int targetStatus, String operation, String gostMethod) {
         // 1. 获取当前用户信息
-        UserInfo currentUser = getCurrentUserInfo();
+        return changeForwardStatus(id, targetStatus, operation, gostMethod, getCurrentUserInfo());
+    }
 
+    private R changeForwardStatus(Long id, int targetStatus, String operation, String gostMethod, UserInfo currentUser) {
         if (currentUser.getRoleId() != ADMIN_ROLE_ID) {
             User user = userService.getById(currentUser.getUserId());
             if (user == null) return R.err("用户不存在");

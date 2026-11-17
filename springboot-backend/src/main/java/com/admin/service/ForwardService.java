@@ -67,6 +67,12 @@ public interface ForwardService extends IService<Forward> {
     R resumeForward(Long id);
 
     /**
+     * 系统内部恢复转发(按管理员身份,不读请求里的令牌):定时任务线程里没有 HTTP 请求,
+     * resumeForward 取当前用户会空指针。守卫和 resumeForward 完全一样(转发自己的到期、隧道停用)。
+     */
+    R resumeForwardAsSystem(Long id);
+
+    /**
      * 转发诊断功能
      * @param id 转发ID
      * @return 诊断结果
