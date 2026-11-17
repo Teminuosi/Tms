@@ -687,8 +687,8 @@ export default function UserPage() {
                     {/* 流量信息 */}
                     <div className="space-y-1.5">
                       <div className="flex justify-between text-sm">
-                        <span className="text-default-600">流量限制</span>
-                        <span className="font-medium text-xs">{formatFlow(user.flow, 'gb')}</span>
+                        <span className="text-default-600">账号总流量</span>
+                        <span className="font-medium text-xs">{user.flow > 0 ? formatFlow(user.flow, 'gb') : '不限'}</span>
                       </div>
                       <div className="flex justify-between text-sm">
                         <span className="text-default-600">已使用</span>
@@ -872,12 +872,13 @@ export default function UserPage() {
                   type="number"
                   value={userForm.flow.toString()}
                   onChange={(e) => {
-                    const value = Math.min(Math.max(Number(e.target.value) || 0, 1), 99999);
+                    // 0 = 不限(协议 / 中转按 AccountLimits);以前最小只能填 1
+                    const value = Math.min(Math.max(Number(e.target.value) || 0, 0), 99999);
                     setUserForm(prev => ({ ...prev, flow: value }));
                   }}
-                  min="1"
+                  min="0"
                   max="99999"
-                  description="所有线路加起来算,跑满了这个人所有线路一起停(协议/中转也算)"
+                  description="0 = 不限。所有线路加起来算,跑满了这个人所有线路一起停(协议/中转也算);老的端口/隧道转发填 0 仍会被停"
                 />
                 <Input
                   label="转发数量"
