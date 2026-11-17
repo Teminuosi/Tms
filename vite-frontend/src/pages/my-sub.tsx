@@ -13,14 +13,15 @@ import { getSubBase } from "@/utils/sub-base";
 
 /**
  * 我的订阅(车友视角)· 一条订阅 = 一个套餐。
- * 每条线路各自带流量配额、到期、状态——不存在"账号总流量"这种混淆概念。
+ * 每条线路各自带流量配额、到期、状态;账号本身另有到期和(可选的)账号总流量,
+ * 账号总流量是所有线路一起算的总闸(2026-11-17 起对协议 / 中转也生效),跑满了所有线路一起停。
  * 车友只管复制链接导客户端,内部的机器/端口/转发对他隐藏。
  */
 export default function MySubPage() {
   const [lines, setLines] = useState<any[]>([]);
   // 「全部线路」聚合订阅:一条链接包含他所有线路,以后新开线路也不用重发
   const [allSubToken, setAllSubToken] = useState<string>("");
-  const [account, setAccount] = useState<any>(null); // 只用来判断账号是否被停用/到期
+  const [account, setAccount] = useState<any>(null); // 账号到期 / 账号总流量 / 是否被停用
   const [loading, setLoading] = useState(true);
 
   // 订阅链接开头:管理员设了「订阅地址(给车友的)」就用它,没设 = 网页地址(和以前一样)。
@@ -62,9 +63,15 @@ export default function MySubPage() {
   // React 会把这个 0 原样渲染到页面上(标题下面凭空多出一个 "0")
   const accountDisabled = !!account && account.status !== undefined && account.status !== 1;
   const accountExpired = !!account?.expTime && account.expTime > 0 && account.expTime <= Date.now();
+  // 账号总流量:flow 单位 GB,0 / 空 = 不限;已用 = 账号 in_flow + out_flow(字节,所有线路一起算)。
+  // 管理员自己不受账号总流量限制(后端 AccountLimits),所以管理员看这页时不显示这一项。
+  const accountQuotaGb = !!account && !isAdmin() && account.flow > 0 ? Number(account.flow) : 0;
+  const accountUsed = account ? (account.inFlow || 0) + (account.outFlow || 0) : 0;
+  const accountOverFlow = accountQuotaGb > 0 && accountUsed >= accountQuotaGb * GB;
 
   // 全部线路合计(2026-11-13 车主留言:给车友开了 4 条线路,车友只能看到每条各自的限额,看不到总量)。
-  // 数字就是下面各条线路相加 —— 不用账号上的「总流量」:协议 / 中转线路不按那个数扣量,显示出来是个不管用的上限。
+  // 数字就是下面各条线路自己的额度相加;账号总流量(总闸)单独在标题下面那行显示。
+  // 只有 1 条线路时不显示:合计和那张卡上的数字一模一样,重复一遍没有新信息。
   const totalUsed = lines.reduce((n: number, l: any) => n + (l.flow || 0), 0);
   const totalQuotaGb = lines.reduce((n: number, l: any) => n + (l.quotaGb > 0 ? l.quotaGb : 0), 0);
   const unlimitedCount = lines.filter((l: any) => !(l.quotaGb > 0)).length;
@@ -75,6 +82,22 @@ export default function MySubPage() {
         <h1 className="text-xl font-bold">我的订阅</h1>
         <span className="text-sm text-default-500">共 {lines.length} 条线路,每条各自独立</span>
       </div>
+
+      {!loading && account && (
+        <div className="text-sm flex items-center gap-6 flex-wrap">
+          <div>
+            <span className="text-default-500 text-xs">账号到期 </span>
+            <span className="font-semibold">{account.expTime > 0 ? fmtDate(account.expTime) : "永久"}</span>
+          </div>
+          {accountQuotaGb > 0 && (
+            <div>
+              <span className="text-default-500 text-xs">账号总流量 </span>
+              <span className="font-semibold">已用 {fmtGB(accountUsed)}</span>
+              <span className="text-default-400"> / {accountQuotaGb} GB</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {!loading && lines.length > 1 && (
         <div className="text-sm">
@@ -88,10 +111,10 @@ export default function MySubPage() {
         </div>
       )}
 
-      {(accountDisabled || accountExpired) && (
+      {(accountDisabled || accountExpired || accountOverFlow) && (
         <Card className="border border-danger/40 bg-danger/5">
           <CardBody className="text-sm text-danger">
-            ⚠️ 你的账号{accountExpired ? "已到期" : "已被停用"},所有线路暂时不可用,请联系管理员。
+            ⚠️ 你的账号{accountExpired ? "已到期" : accountDisabled ? "已被停用" : "总流量已用完"},所有线路暂时不可用,请联系管理员。
           </CardBody>
         </Card>
       )}
@@ -275,7 +298,7 @@ export default function MySubPage() {
             <li><b>v2rayNG(安卓)</b>:左侧菜单 → 订阅分组设置 → + → 粘贴地址 → 更新订阅</li>
           </ul>
           <div className="text-xs text-default-400">
-            每条线路是独立的套餐:流量、到期各算各的,一条用完不影响另一条。管理员在某条线路上加了新协议,你更新订阅就自动出现。
+            每条线路是独立的套餐:流量、到期各算各的,一条用完不影响另一条;如果账号设了总流量,所有线路的用量加起来算,用完了所有线路一起停。管理员在某条线路上加了新协议,你更新订阅就自动出现。
           </div>
         </CardBody>
       </Card>

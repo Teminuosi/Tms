@@ -125,8 +125,8 @@ export default function UserPage() {
   const [isEdit, setIsEdit] = useState(false);
   // 用户表单只管「人」(账号/密码/状态)。
   // 套餐参数(限速、流量、到期、重置日)一律在「分配用户」时按线路填 —— 那才是卖出去的东西。
-  // 这里的 flow/num 对协议和中转都不生效(流量按线路算、转发数量分配路径根本不查),
-  // 留着只是给老的端口/隧道转发业务用,所以给足量默认值、表单里不再让人操心。
+  // 这里的 num 对协议和中转不生效(转发数量分配路径根本不查);flow(账号总流量)2026-11-17 起
+  // 对协议 / 中转也生效 —— 所有线路加起来跑满就全停。给足量默认值(99999 ≈ 不限)、表单里不再让人操心。
   const [userForm, setUserForm] = useState<UserForm>({
     user: '',
     pwd: '',
@@ -303,7 +303,8 @@ export default function UserPage() {
       user: '',
       pwd: '',
       status: 1,
-      flow: 100,
+      // 以前默认 100:账号总流量对协议/中转不生效时无所谓,现在会真停 —— 新建的车友默认给足量
+      flow: 99999,
       num: 10,
       expTime: null,
       flowResetTime: 0
@@ -863,11 +864,11 @@ export default function UserPage() {
             {/* 老的端口/隧道转发业务才用得上的账号级配额,默认折叠,别干扰卖订阅的主流程 */}
             <details className="mt-2">
               <summary className="text-xs text-default-500 cursor-pointer select-none">
-                高级(仅端口转发 / 隧道转发用)
+                高级(账号总流量 / 端口转发 / 隧道转发)
               </summary>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
                 <Input
-                  label="流量限制(GB)"
+                  label="账号总流量(GB)"
                   type="number"
                   value={userForm.flow.toString()}
                   onChange={(e) => {
@@ -876,7 +877,7 @@ export default function UserPage() {
                   }}
                   min="1"
                   max="99999"
-                  description="对协议/中转无效(它们按线路算)"
+                  description="所有线路加起来算,跑满了这个人所有线路一起停(协议/中转也算)"
                 />
                 <Input
                   label="转发数量"
