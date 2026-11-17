@@ -6,7 +6,9 @@ COPY src ./src
 RUN mvn clean package -DskipTests
 
 # 运行阶段
-FROM eclipse-temurin:21-jre
+# 钉在 Ubuntu 24.04(noble):不带系统名的 21-jre 会跟着官方换到新系统(2026-11-17 换成 26.04 resolute),
+# 下面换的中科大源不给 resolute(403),构建直接失败。要升系统时先确认镜像源支持再改这里。
+FROM eclipse-temurin:21-jre-noble
 WORKDIR /app
 
 # CI 注入构建标识:镜像 tag 固定是 :latest,没有版本号可比,
