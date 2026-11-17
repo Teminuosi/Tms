@@ -5,6 +5,7 @@ import com.admin.common.aop.LogRedact;
 import com.admin.common.dto.FlowDto;
 import com.admin.common.dto.GostConfigDto;
 import com.admin.common.lang.R;
+import com.admin.common.task.AccountPauseStore;
 import com.admin.common.task.CheckGostConfigAsync;
 import com.admin.common.utils.AESCrypto;
 import com.admin.common.utils.AccountLimits;
@@ -77,6 +78,10 @@ public class FlowController extends BaseController {
     com.admin.mapper.InboundUserMapper inboundUserMapper;
     @Resource
     com.admin.mapper.InboundLineMapper inboundLineMapper;
+
+    /** 账号总闸停掉的转发记账 */
+    @Resource
+    AccountPauseStore accountPauseStore;
 
     /**
      * 加密消息包装器
@@ -276,7 +281,8 @@ public class FlowController extends BaseController {
      * 协议/中转的账号级检查:账号被停用、账号整体到期、账号总流量跑满 → 这个人名下全停(账号级总闸)。
      * 账号总流量:flow 为 0 / 空 = 不限(和老的隧道权限路径 checkUserRelatedLimits 把 0 当「停」不同,那条不动);
      * 管理员自己不按账号总流量停。线路自己的配额仍由 checkLineRelatedLimits 管。
-     * 账号放开后(车主改车友 / 清零 / 每月重置)由 AccountLineResume 把因账号停掉的线路拉起来。
+     * 这一次真从运行停下来的转发记进 account_pause;账号放开后(改车友 / 清零 / 每月重置 / 每分钟补恢复)
+     * 由 AccountLineResume 只恢复这些。
      */
     private void checkUserAccountLimits(String userId, String name) {
         User u = userService.getById(userId);
@@ -284,16 +290,16 @@ public class FlowController extends BaseController {
             return;
         }
         if (u.getExpTime() != null && u.getExpTime() > 0 && u.getExpTime() <= System.currentTimeMillis()) {
-            pauseAllUserServices(userId, name);
+            pauseAllUserServices(userId, name, AccountPauseStore.REASON_EXPIRED);
             return;
         }
         if (u.getStatus() != null && u.getStatus() != 1) {
-            pauseAllUserServices(userId, name);
+            pauseAllUserServices(userId, name, AccountPauseStore.REASON_DISABLED);
             return;
         }
         if (AccountLimits.accountFlowExceeded(u)) {
             log.info("账号[{}]总流量已跑满({} GB),停该账号所有转发", u.getUser(), u.getFlow());
-            pauseAllUserServices(userId, name);
+            pauseAllUserServices(userId, name, AccountPauseStore.REASON_FLOW);
         }
     }
 
@@ -413,26 +419,40 @@ public class FlowController extends BaseController {
         // 检查用户总流量限制
         long userFlowLimit = updatedUser.getFlow() * BYTES_TO_GB;
         long userCurrentFlow = updatedUser.getInFlow() + updatedUser.getOutFlow();
+        // 停的判据一字未改。只是在「和 AccountLimits 同义」的情况下记账,账号放开后能拉回来:
+        // 账号总流量只在 flow > 0 时记(这条路把 0 当「停」,AccountLimits 当「不限」,记了会停了拉、拉了停)
         if (userFlowLimit < userCurrentFlow) {
-            pauseAllUserServices(userId, name);
+            if (AccountLimits.accountFlowExceeded(updatedUser)) {
+                pauseAllUserServices(userId, name, AccountPauseStore.REASON_FLOW);
+            } else {
+                pauseAllUserServices(userId, name);
+            }
             return;
         }
 
         // 检查用户到期时间
         if (updatedUser.getExpTime() != null && updatedUser.getExpTime() > 0 && updatedUser.getExpTime() <= new Date().getTime()) {
-            pauseAllUserServices(userId, name);
+            pauseAllUserServices(userId, name, AccountPauseStore.REASON_EXPIRED);
             return;
         }
 
         // 检查用户状态
         if (updatedUser.getStatus() != 1) {
-            pauseAllUserServices(userId, name);
+            pauseAllUserServices(userId, name, AccountPauseStore.REASON_DISABLED);
         }
     }
 
     public void pauseAllUserServices(String userId, String name) {
         List<Forward> forwardList = forwardService.list(new QueryWrapper<Forward>().eq("user_id", userId));
         pauseService(forwardList, name);
+    }
+
+    /** 账号原因停:停法和上面一模一样,另把这次真从运行停下来的记进 account_pause(账号放开后只恢复这些) */
+    private void pauseAllUserServices(String userId, String name, String reason) {
+        List<Forward> forwardList = forwardService.list(new QueryWrapper<Forward>().eq("user_id", userId));
+        for (Forward f : pauseService(forwardList, name)) {
+            accountPauseStore.record(f, reason);
+        }
     }
 
     public void checkUserTunnelRelatedLimits(String userTunnelId, String name, String userId) {
@@ -472,8 +492,11 @@ public class FlowController extends BaseController {
      * 表现就是「账号到期了,里面的线路照样能用」,而单独停某条线路反倒有效
      * (那条路径 pauseLineForwards 一直是按每条转发算名字的)。
      */
-    public void pauseService(List<Forward> forwardList, String name) {
+    public List<Forward> pauseService(List<Forward> forwardList, String name) {
+        // 这一次真从运行(status=1)停下来的,给账号总闸记账用;本来就停着的不算
+        List<Forward> stopped = new java.util.ArrayList<>();
         for (Forward forward : forwardList) {
+            boolean wasRunning = forward.getStatus() != null && forward.getStatus() == 1;
             Tunnel tunnel = tunnelService.getById(forward.getTunnelId());
             if (tunnel != null){
                 // 自动批量停(账号/隧道权限超额、到期、停用):只按老版本的原名发,入口 + 隧道转发的远端,不走 _0 兜底。
@@ -489,7 +512,11 @@ public class FlowController extends BaseController {
             }
             forward.setStatus(0);
             forwardService.updateById(forward);
+            if (wasRunning) {
+                stopped.add(forward);
+            }
         }
+        return stopped;
     }
 
     /**

@@ -120,6 +120,10 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     @Resource
     @Lazy
+    private com.admin.common.task.AccountPauseStore accountPauseStore;
+
+    @Resource
+    @Lazy
     private TunnelService tunnelService;
     
     @Resource
@@ -278,6 +282,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
             // 2. 级联删除用户相关数据
             deleteUserRelatedData(id);
             statisticsFlowService.remove(new QueryWrapper<StatisticsFlow>().eq("user_id", id));
+            accountPauseStore.removeByUser(id);
             // 3. 删除用户
             boolean result = this.removeById(id);
             return result ? R.ok(SUCCESS_DELETE_MSG) : R.err(ERROR_DELETE_FAILED);
@@ -390,18 +395,16 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     // ========== 私有辅助方法 ==========
 
     /**
-     * 改之前账号被总闸挡着、改之后放开了,才去拉线路;只改名字 / 密码时什么都不动。
-     * 吞掉一切异常:车友已经改成功了,恢复失败只记日志。
+     * 改完之后账号不再被总闸挡着 → 只恢复 account_pause 里记着的(账号总闸停掉的)转发;
+     * 账号还挡着、或者账上没有记录(只改名字 / 密码)时什么都不动。
+     * 吞掉一切异常:车友已经改成功了,恢复失败只记日志(CheckExpiryAsync 每分钟会再补)。
      */
     private void resumeAccountLinesIfUnblocked(User before) {
         try {
             if (before == null || before.getId() == null) {
                 return;
             }
-            User after = this.getById(before.getId());
-            if (com.admin.common.task.AccountLineResume.shouldTryResume(before, after, System.currentTimeMillis())) {
-                accountLineResume.resumeIfAccountOk(before.getId());
-            }
+            accountLineResume.resumeIfAccountOk(before.getId());
         } catch (Exception e) {
             log.warn("改车友后恢复线路失败(用户 {}): {}", before == null ? null : before.getId(), e.getMessage());
         }

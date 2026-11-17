@@ -66,6 +66,12 @@ public class CheckExpiryAsync {
     @Resource
     private InboundLineMapper inboundLineMapper;
 
+    @Resource
+    private AccountPauseStore accountPauseStore;
+
+    @Resource
+    private AccountLineResume accountLineResume;
+
     private static final long BYTES_TO_GB = 1024L * 1024L * 1024L;
 
     /**
@@ -83,6 +89,24 @@ public class CheckExpiryAsync {
             pauseExpiredOrDepletedLines();
         } catch (Exception e) {
             log.error("线路到期/超额巡检失败: {}", e.getMessage(), e);
+        }
+        try {
+            retryAccountResume();
+        } catch (Exception e) {
+            log.warn("账号放开后补恢复失败: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 补恢复:账号已经放开、但 account_pause 里还有记录的(改车友那一刻节点离线、恢复没成),每分钟再试一次。
+     * 只动记录里的转发;账号仍被挡的跳过。成功了才打日志,失败只在 debug 里,免得每分钟刷屏。
+     */
+    private void retryAccountResume() {
+        for (Long uid : accountPauseStore.userIds()) {
+            int n = accountLineResume.resumeIfAccountOk(uid, false);
+            if (n > 0) {
+                log.info("账号放开后补恢复:用户 {} 恢复 {} 条转发", uid, n);
+            }
         }
     }
 
@@ -106,7 +130,9 @@ public class CheckExpiryAsync {
             if (live.isEmpty()) {
                 continue;
             }
-            pauseForwards(live);
+            for (Forward f : pauseForwards(live)) {
+                accountPauseStore.record(f, expired ? AccountPauseStore.REASON_EXPIRED : AccountPauseStore.REASON_DISABLED);
+            }
             log.info("账号[{}] {} → 已停 {} 条转发", u.getUser(),
                     expired ? "已到期" : "被停用", live.size());
         }
@@ -205,8 +231,11 @@ public class CheckExpiryAsync {
      * 整批共用一个名字的话只有一条会真的停下来 —— FlowController.pauseService
      * 以前就栽在这。这里的转发都来自协议/中转,没有 user_tunnel,所以恒为 0。
      */
-    private void pauseForwards(List<Forward> forwards) {
+    private List<Forward> pauseForwards(List<Forward> forwards) {
+        // 这一次真从运行(status=1)停下来的,给账号总闸记账用
+        List<Forward> stopped = new ArrayList<>();
         for (Forward f : forwards) {
+            boolean wasRunning = f.getStatus() != null && f.getStatus() == 1;
             boolean found = true;
             try {
                 Tunnel tunnel = tunnelService.getById(f.getTunnelId());
@@ -227,6 +256,10 @@ public class CheckExpiryAsync {
             }
             f.setStatus(0);
             forwardService.updateById(f);
+            if (wasRunning) {
+                stopped.add(f);
+            }
         }
+        return stopped;
     }
 }

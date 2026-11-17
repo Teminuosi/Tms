@@ -6,11 +6,13 @@ import com.admin.entity.Inbound;
 import com.admin.entity.InboundLine;
 import com.admin.entity.InboundUser;
 import com.admin.entity.User;
+import com.admin.entity.UserTunnel;
 import com.admin.mapper.InboundLineMapper;
 import com.admin.mapper.InboundMapper;
 import com.admin.mapper.InboundUserMapper;
 import com.admin.service.ForwardService;
 import com.admin.service.UserService;
+import com.admin.service.UserTunnelService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -21,18 +23,23 @@ import java.util.Collections;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
-/** 账号放开后只拉「status=1、自己也不该停」的线路里停着的转发 */
+/** 账号放开后只拉 account_pause 里记着的,并且线路 / 隧道权限自己该停的不拉 */
 class AccountLineResumeTest {
 
     private static final long GB = 1024L * 1024L * 1024L;
+    private static final long NOW = System.currentTimeMillis();
 
     private UserService userService;
     private ForwardService forwardService;
+    private UserTunnelService userTunnelService;
     private InboundMapper inboundMapper;
     private InboundUserMapper inboundUserMapper;
     private InboundLineMapper inboundLineMapper;
+    private AccountPauseStore store;
     private AccountLineResume r;
 
     private static User user(Long flowGb, long used, Long exp, Integer status) {
@@ -76,56 +83,91 @@ class AccountLineResumeTest {
     private static Forward fwd(long id, int status, long used) {
         Forward f = new Forward();
         f.setId(id);
+        f.setUserId(7);
+        f.setTunnelId((int) (id / 100));
         f.setStatus(status);
         f.setInFlow(used);
         f.setOutFlow(0L);
+        f.setCreatedTime(1000L + id);
         return f;
+    }
+
+    private static AccountPauseStore.Rec rec(long fid) {
+        return new AccountPauseStore.Rec(fid, 7L, 1000L + fid, "flow");
+    }
+
+    private static UserTunnel ut(int status, long flowGb, long used, long exp) {
+        UserTunnel t = new UserTunnel();
+        t.setStatus(status);
+        t.setFlow(flowGb);
+        t.setInFlow(used);
+        t.setOutFlow(0L);
+        t.setExpTime(exp);
+        return t;
     }
 
     @BeforeEach
     void setUp() {
         userService = mock(UserService.class);
         forwardService = mock(ForwardService.class);
+        userTunnelService = mock(UserTunnelService.class);
         inboundMapper = mock(InboundMapper.class);
         inboundUserMapper = mock(InboundUserMapper.class);
         inboundLineMapper = mock(InboundLineMapper.class);
+        store = mock(AccountPauseStore.class);
         r = new AccountLineResume();
         ReflectionTestUtils.setField(r, "userService", userService);
         ReflectionTestUtils.setField(r, "forwardService", forwardService);
+        ReflectionTestUtils.setField(r, "userTunnelService", userTunnelService);
         ReflectionTestUtils.setField(r, "inboundMapper", inboundMapper);
         ReflectionTestUtils.setField(r, "inboundUserMapper", inboundUserMapper);
         ReflectionTestUtils.setField(r, "inboundLineMapper", inboundLineMapper);
+        ReflectionTestUtils.setField(r, "accountPauseStore", store);
 
-        // 四条线路:node1 正常(转发停着)、node2 车主手动停、node3 线路自己跑满、node4 线路自己到期
+        // 线路:node1 正常、node2 车主手动停、node3 线路自己跑满
         when(inboundLineMapper.selectList(any())).thenReturn(Arrays.asList(
-                line(1, 1, 0L, null),
-                line(2, 0, 0L, null),
-                line(3, 1, 10L, null),
-                line(4, 1, 0L, 1L)));
+                line(1, 1, 0L, null), line(2, 0, 0L, null), line(3, 1, 10L, null)));
         when(inboundUserMapper.selectList(any())).thenReturn(Arrays.asList(
-                iu(11, 101), iu(11, 102), iu(12, 201), iu(13, 301), iu(14, 401)));
+                iu(11, 101), iu(11, 102), iu(12, 201), iu(13, 301)));
         when(inboundMapper.selectById(11L)).thenReturn(inbound(11, 1));
         when(inboundMapper.selectById(12L)).thenReturn(inbound(12, 2));
         when(inboundMapper.selectById(13L)).thenReturn(inbound(13, 3));
-        when(inboundMapper.selectById(14L)).thenReturn(inbound(14, 4));
-        // lineForwards 按 inbound_user 出现顺序逐条线路查
+        Forward f101 = fwd(101, 0, 0), f102 = fwd(102, 0, 0), f201 = fwd(201, 0, 0), f301 = fwd(301, 0, 10 * GB);
         when(forwardService.list(any())).thenReturn(
-                Arrays.asList(fwd(101, 0, 5 * GB), fwd(102, 1, 0)),
-                Collections.singletonList(fwd(201, 0, 0)),
-                Collections.singletonList(fwd(301, 0, 10 * GB)),
-                Collections.singletonList(fwd(401, 0, 0)));
+                Arrays.asList(f101, f102), Collections.singletonList(f201), Collections.singletonList(f301));
+        when(forwardService.getById(101L)).thenReturn(f101);
+        when(forwardService.getById(102L)).thenReturn(f102);
+        when(forwardService.getById(201L)).thenReturn(f201);
+        when(forwardService.getById(301L)).thenReturn(f301);
+        when(forwardService.getById(501L)).thenReturn(fwd(501, 0, 0)); // 老隧道权限转发,权限正常
+        when(forwardService.getById(502L)).thenReturn(fwd(502, 0, 0)); // 老隧道权限转发,权限到期
+        when(forwardService.getById(601L)).thenReturn(fwd(601, 1, 0)); // 已经被手动恢复过
+        Forward other = fwd(701, 0, 0);
+        other.setUserId(99); // id 被复用给别人了
+        when(forwardService.getById(701L)).thenReturn(other);
+        when(userTunnelService.getOne(any())).thenReturn(ut(1, 100, 0, 0), ut(1, 100, 0, 1L));
         when(forwardService.resumeForwardAsSystem(anyLong())).thenReturn(R.ok());
+        // 账上:101 201 301 501 502 601 701;102 不在账上(车主在转发页手动停的)
+        when(store.listByUser(7L)).thenReturn(Arrays.asList(
+                rec(101), rec(201), rec(301), rec(501), rec(502), rec(601), rec(701)));
     }
 
     @Test
-    void resumesOnlyPausedForwardsOfHealthyLines() {
+    void resumesOnlyRecordedForwardsWhoseOwnGateIsOpen() {
         when(userService.getById(7L)).thenReturn(user(100L, 50 * GB, 0L, 1));
-        assertEquals(1, r.resumeIfAccountOk(7L));
+        assertEquals(2, r.resumeIfAccountOk(7L));
         verify(forwardService).resumeForwardAsSystem(101L);
-        verify(forwardService, never()).resumeForwardAsSystem(102L); // 本来就在跑
+        verify(forwardService).resumeForwardAsSystem(501L);
+        verify(forwardService, never()).resumeForwardAsSystem(102L); // 不在账上:车主手动停的
         verify(forwardService, never()).resumeForwardAsSystem(201L); // 线路被车主停了
         verify(forwardService, never()).resumeForwardAsSystem(301L); // 线路自己跑满
-        verify(forwardService, never()).resumeForwardAsSystem(401L); // 线路自己到期
+        verify(forwardService, never()).resumeForwardAsSystem(502L); // 隧道权限到期
+        verify(forwardService, never()).resumeForwardAsSystem(601L);
+        verify(forwardService, never()).resumeForwardAsSystem(701L);
+        // 拉起来的、交给别的逻辑的、作废的,记录都删掉
+        for (long id : new long[]{101, 201, 301, 501, 502, 601, 701}) {
+            verify(store).remove(id);
+        }
     }
 
     @Test
@@ -137,49 +179,83 @@ class AccountLineResumeTest {
         when(userService.getById(7L)).thenReturn(user(0L, 0, 0L, 0)); // 停用
         assertEquals(0, r.resumeIfAccountOk(7L));
         verify(forwardService, never()).resumeForwardAsSystem(anyLong());
+        verify(store, never()).remove(anyLong());
     }
 
     @Test
     void flowZeroIsUnlimited() {
         when(userService.getById(7L)).thenReturn(user(0L, 999 * GB, 0L, 1));
-        assertEquals(1, r.resumeIfAccountOk(7L));
+        assertEquals(2, r.resumeIfAccountOk(7L));
     }
 
     @Test
-    void adminIsNeverTouched() {
-        User admin = user(0L, 0, 0L, 1);
-        admin.setRoleId(0);
-        when(userService.getById(7L)).thenReturn(admin);
+    void emptyLedgerTouchesNothing() {
+        when(userService.getById(7L)).thenReturn(user(0L, 0, 0L, 1));
+        when(store.listByUser(7L)).thenReturn(Collections.emptyList());
         assertEquals(0, r.resumeIfAccountOk(7L));
         verify(forwardService, never()).resumeForwardAsSystem(anyLong());
     }
 
     @Test
-    void failuresAreSwallowed() {
-        when(userService.getById(7L)).thenReturn(user(0L, 0, 0L, 1));
-        when(forwardService.resumeForwardAsSystem(101L)).thenThrow(new RuntimeException("node offline"));
+    void adminIsNeverTouchedAndLedgerCleared() {
+        User admin = user(0L, 0, 0L, 1);
+        admin.setRoleId(0);
+        when(userService.getById(7L)).thenReturn(admin);
         assertEquals(0, r.resumeIfAccountOk(7L));
+        verify(forwardService, never()).resumeForwardAsSystem(anyLong());
+        verify(store).removeByUser(7L);
+    }
+
+    @Test
+    void offlineKeepsRecordPermanentFailureDropsIt() {
+        when(userService.getById(7L)).thenReturn(user(0L, 0, 0L, 1));
+        when(forwardService.resumeForwardAsSystem(101L)).thenReturn(R.err("恢复服务失败：节点不在线"));
+        when(forwardService.resumeForwardAsSystem(501L)).thenReturn(R.err("该转发已到期,无法恢复"));
+        assertEquals(0, r.resumeIfAccountOk(7L, false));
+        verify(store, never()).remove(101L); // 节点离线:留着,下一分钟再补
+        verify(store).remove(501L);          // 再试也没用
+    }
+
+    @Test
+    void exceptionsAreSwallowed() {
+        when(userService.getById(7L)).thenReturn(user(0L, 0, 0L, 1));
+        when(forwardService.resumeForwardAsSystem(101L)).thenThrow(new RuntimeException("boom"));
+        assertEquals(1, r.resumeIfAccountOk(7L));
+        verify(store, never()).remove(101L);
         when(inboundLineMapper.selectList(any())).thenThrow(new RuntimeException("Table 'gost.inbound_line' doesn't exist"));
         assertEquals(0, r.resumeIfAccountOk(7L));
     }
 
     @Test
-    void shouldTryResumeOnlyOnBlockedToOpen() {
-        long now = System.currentTimeMillis();
-        User over = user(50L, 70 * GB, 0L, 1);
-        User raised = user(100L, 70 * GB, 0L, 1);
-        User unlimited = user(0L, 70 * GB, 0L, 1);
-        User expired = user(0L, 0, 1L, 1);
-        User renewed = user(0L, 0, now + 86_400_000L, 1);
-        User disabled = user(0L, 0, 0L, 0);
-        User enabled = user(0L, 0, 0L, 1);
-        assertTrue(AccountLineResume.shouldTryResume(over, raised, now));
-        assertTrue(AccountLineResume.shouldTryResume(over, unlimited, now));
-        assertTrue(AccountLineResume.shouldTryResume(expired, renewed, now));
-        assertTrue(AccountLineResume.shouldTryResume(disabled, enabled, now));
-        assertFalse(AccountLineResume.shouldTryResume(raised, raised, now)); // 改名字 / 密码
-        assertFalse(AccountLineResume.shouldTryResume(over, over, now));     // 还超着
-        assertFalse(AccountLineResume.shouldTryResume(enabled, disabled, now));
-        assertFalse(AccountLineResume.shouldTryResume(null, enabled, now));
+    void revivedLinesRecordWhenAccountBlockedElseResume() {
+        when(inboundLineMapper.selectBatchIds(any())).thenReturn(Collections.singletonList(line(1, 1, 0L, null)));
+        when(userService.getById(7L)).thenReturn(user(1L, 5 * GB, 0L, 1)); // 账号还超着
+        assertEquals(0, r.resumeRevivedLines(7L, Collections.singletonList(1L)));
+        verify(store).record(argThat(f -> f.getId() == 101L), eq(AccountPauseStore.REASON_LINE_RESET));
+        verify(store).record(argThat(f -> f.getId() == 102L), eq(AccountPauseStore.REASON_LINE_RESET));
+        verify(forwardService, never()).resumeForwardAsSystem(anyLong());
+
+        when(userService.getById(7L)).thenReturn(user(0L, 0, 0L, 1));
+        when(forwardService.list(any())).thenReturn(Arrays.asList(fwd(101, 0, 0), fwd(102, 0, 0)));
+        assertEquals(2, r.resumeRevivedLines(7L, Collections.singletonList(1L)));
+    }
+
+    @Test
+    void userTunnelGateMatchesLegacyCriteria() {
+        assertFalse(AccountLineResume.userTunnelBlocked(1, 100L, 0L, 0L, 0L, NOW));
+        assertTrue(AccountLineResume.userTunnelBlocked(0, 100L, 0L, 0L, 0L, NOW));
+        assertTrue(AccountLineResume.userTunnelBlocked(1, 100L, 0L, 0L, NOW - 1, NOW));
+        assertTrue(AccountLineResume.userTunnelBlocked(1, 1L, GB, 0L, 0L, NOW));
+        assertTrue(AccountLineResume.userTunnelBlocked(1, 0L, 0L, 0L, 0L, NOW)); // 老路径 0 也是停
+    }
+
+    @Test
+    void permanentFailureMessages() {
+        assertTrue(AccountLineResume.permanentFailure("该转发已到期,无法恢复"));
+        assertTrue(AccountLineResume.permanentFailure("隧道已禁用，无法恢复服务"));
+        assertTrue(AccountLineResume.permanentFailure("转发不存在"));
+        assertFalse(AccountLineResume.permanentFailure("恢复服务失败：节点不在线"));
+        assertFalse(AccountLineResume.permanentFailure("恢复服务失败：等待响应超时"));
+        assertFalse(AccountLineResume.permanentFailure(null));
     }
 }

@@ -69,6 +69,11 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
     @Resource
     private com.admin.common.task.UserNodeNameStore nodeNameStore;
 
+    /** 账号总闸停掉的转发记账:手动停 / 恢复 / 删除时清掉 */
+    @Resource
+    @Lazy
+    private com.admin.common.task.AccountPauseStore accountPauseStore;
+
     @Resource
     NodeService nodeService;
 
@@ -509,6 +514,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         boolean result = this.removeById(id);
         if (result) {
             nodeNameStore.deleteForward(id);
+            accountPauseStore.remove(id);
             return R.ok("端口转发删除成功");
         } else {
             return R.err("端口转发删除失败");
@@ -517,11 +523,14 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
     @Override
     public R pauseForward(Long id) {
+        // 车主 / 线路逻辑接手了这条转发:不再归账号总闸管,账号放开时别替他拉起来
+        accountPauseStore.remove(id);
         return changeForwardStatus(id, FORWARD_STATUS_PAUSED, "暂停", "PauseService");
     }
 
     @Override
     public R resumeForward(Long id) {
+        accountPauseStore.remove(id); // 同上:手动 / 线路逻辑恢复过,账上的记录作废
         Forward f = this.getById(id);
         // exp_time = 0 是「永不过期」,不是 1970 年过期的。少了 > 0 这个守卫,
         // 不设到期的转发一旦被暂停就再也恢复不了,月初流量重置那次批量 resume 也会全军覆没
@@ -560,6 +569,7 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
         boolean result = this.removeById(id);
         if (result) {
             nodeNameStore.deleteForward(id);
+            accountPauseStore.remove(id);
             return R.ok("端口转发强制删除成功");
         } else {
             return R.err("端口转发强制删除失败");

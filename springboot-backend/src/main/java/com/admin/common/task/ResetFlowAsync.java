@@ -55,6 +55,9 @@ public class ResetFlowAsync {
     @Resource
     AccountLineResume accountLineResume;
 
+    @Resource
+    AccountPauseStore accountPauseStore;
+
     /**
      * 每天0点执行流量重置任务
      * 查询出用户和隧道的重置流量日期是今天的数据，将上下流量重置为0
@@ -235,9 +238,14 @@ public class ResetFlowAsync {
                   .set("updated_time", now);
                 inboundLineMapper.update(null, lw);
             }
-            // 3) 转发跟着线路走:status=1、按线路自己的判据也不该停的线路,把停着的转发拉起来
-            //    (含上个周期因账号总流量跑满被停的)。账号此时仍到期 / 停用 / 跑满就一条都不拉。
-            int resumed = cleared > 0 ? accountLineResume.resumeIfAccountOk(user.getId()) : 0;
+            // 3) 转发跟着线路走,两批,别的一概不碰(车主手动停的单条转发、老版本留下的「线路 1 / 转发 0」都不在里面):
+            //    a. 上面改回 1 的跑满线路的转发(账号仍被挡时先记进 account_pause,账号放开时一起拉)
+            //    b. account_pause 里账号总闸停掉的(含上个周期账号总流量跑满停的),账号此时不再被挡才拉
+            int resumed = 0;
+            if (cleared > 0) {
+                resumed += accountLineResume.resumeRevivedLines(user.getId(), depletedLineIds);
+                resumed += accountLineResume.resumeIfAccountOk(user.getId());
+            }
             if (cleared > 0) {
                 log.info("用户[{}]协议线路流量已重置:清零 {} 条转发,恢复线路 {} 条,恢复转发 {} 条",
                         user.getUser(), cleared, depletedLineIds.size(), resumed);
@@ -316,6 +324,8 @@ public class ResetFlowAsync {
                     }
                     forward.setStatus(0);
                     forwardService.updateById(forward);
+                    // 账号到期停的:记账,续期后能拉回来(停法不变)
+                    accountPauseStore.record(forward, AccountPauseStore.REASON_EXPIRED);
                 }
             }
             user.setStatus(0);
