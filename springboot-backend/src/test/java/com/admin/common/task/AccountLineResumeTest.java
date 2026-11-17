@@ -257,5 +257,32 @@ class AccountLineResumeTest {
         assertFalse(AccountLineResume.permanentFailure("恢复服务失败：节点不在线"));
         assertFalse(AccountLineResume.permanentFailure("恢复服务失败：等待响应超时"));
         assertFalse(AccountLineResume.permanentFailure(null));
+        // 节点被删 / 节点上找不到这条服务(入口或隧道转发远端)
+        assertTrue(AccountLineResume.permanentFailure("入口节点不存在"));
+        assertTrue(AccountLineResume.permanentFailure("出口节点不存在"));
+        assertTrue(AccountLineResume.permanentFailure("恢复服务失败：节点上找不到这条转发的服务(节点重装过就会这样,重新保存一下这条转发再试):service 5_2_0_tcp not found"));
+        assertTrue(AccountLineResume.permanentFailure("恢复远端服务失败：service 5_2_0_tls not found"));
+    }
+
+    @Test
+    void retryBudgetCapsEachRound() {
+        when(userService.getById(7L)).thenReturn(user(0L, 0, 0L, 1));
+        AccountLineResume.Budget b = new AccountLineResume.Budget(1, 30_000L);
+        assertEquals(1, r.resumeIfAccountOk(7L, false, b));
+        assertTrue(b.exhausted());
+        verify(forwardService, times(1)).resumeForwardAsSystem(anyLong());
+        verify(store, never()).remove(501L); // 没轮到的留给下一轮
+        assertTrue(new AccountLineResume.Budget(5, -1L).exhausted()); // 时间用完也停
+    }
+
+    @Test
+    void offlineMarksRetryingAndBlockedClearsIt() {
+        when(userService.getById(7L)).thenReturn(user(0L, 0, 0L, 1));
+        when(forwardService.resumeForwardAsSystem(101L)).thenReturn(R.err("恢复服务失败：节点不在线"));
+        r.resumeIfAccountOk(7L, false);
+        verify(store).markRetrying(101L);
+        when(userService.getById(7L)).thenReturn(user(0L, 0, 1L, 1)); // 又到期了
+        r.resumeIfAccountOk(7L, false);
+        verify(store).clearRetrying(7L);
     }
 }

@@ -102,8 +102,20 @@ public class CheckExpiryAsync {
      * 只动记录里的转发;账号仍被挡的跳过。成功了才打日志,失败只在 debug 里,免得每分钟刷屏。
      */
     private void retryAccountResume() {
-        for (Long uid : accountPauseStore.userIds()) {
-            int n = accountLineResume.resumeIfAccountOk(uid, false);
+        // 兜底:账号放开后连续 7 天都没拉起来的记录不再重试
+        int dropped = accountPauseStore.dropStaleRetries(7L * 24 * 3600 * 1000);
+        if (dropped > 0) {
+            log.info("账号放开后补恢复:{} 条连续 7 天都没拉起来,不再重试(转发保持暂停,需要车主手动处理)", dropped);
+        }
+        // 和到期巡检共用一个调度线程:每轮最多试 20 条、最多 30 秒,剩下的下一轮;打乱顺序免得总卡在同几个人身上
+        AccountLineResume.Budget budget = new AccountLineResume.Budget(20, 30_000L);
+        List<Long> uids = new ArrayList<>(accountPauseStore.userIds());
+        java.util.Collections.shuffle(uids);
+        for (Long uid : uids) {
+            if (budget.exhausted()) {
+                break;
+            }
+            int n = accountLineResume.resumeIfAccountOk(uid, false, budget);
             if (n > 0) {
                 log.info("账号放开后补恢复:用户 {} 恢复 {} 条转发", uid, n);
             }

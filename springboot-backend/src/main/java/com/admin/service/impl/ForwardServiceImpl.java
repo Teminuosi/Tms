@@ -523,14 +523,14 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
 
     @Override
     public R pauseForward(Long id) {
-        // 车主 / 线路逻辑接手了这条转发:不再归账号总闸管,账号放开时别替他拉起来
-        accountPauseStore.remove(id);
-        return changeForwardStatus(id, FORWARD_STATUS_PAUSED, "暂停", "PauseService");
+        R r = changeForwardStatus(id, FORWARD_STATUS_PAUSED, "暂停", "PauseService");
+        // 车主 / 线路逻辑真接手了这条转发:不再归账号总闸管,账号放开时别替他拉起来
+        forgetAccountPauseIfAdminDone(id, r);
+        return r;
     }
 
     @Override
     public R resumeForward(Long id) {
-        accountPauseStore.remove(id); // 同上:手动 / 线路逻辑恢复过,账上的记录作废
         Forward f = this.getById(id);
         // exp_time = 0 是「永不过期」,不是 1970 年过期的。少了 > 0 这个守卫,
         // 不设到期的转发一旦被暂停就再也恢复不了,月初流量重置那次批量 resume 也会全军覆没
@@ -538,7 +538,28 @@ public class ForwardServiceImpl extends ServiceImpl<ForwardMapper, Forward> impl
                 && f.getExpTime() < System.currentTimeMillis()) {
             return R.err("该转发已到期,无法恢复");
         }
-        return changeForwardStatus(id, FORWARD_STATUS_ACTIVE, "恢复", "ResumeService");
+        R r = changeForwardStatus(id, FORWARD_STATUS_ACTIVE, "恢复", "ResumeService");
+        forgetAccountPauseIfAdminDone(id, r); // 同上:车主 / 线路逻辑恢复成功了,账上的记录作废
+        return r;
+    }
+
+    /**
+     * 只有【管理员】操作【成功】了才清 account_pause 的记录。
+     * 先清后做的话:车友自己点恢复被拒(没有隧道权限)、车主恢复时节点离线 —— 记录已经没了,
+     * 账号放开后这条再也没人拉。车友本人的操作一律不碰账本。
+     */
+    private void forgetAccountPauseIfAdminDone(Long id, R r) {
+        if (r == null || r.getCode() != 0) {
+            return;
+        }
+        try {
+            Integer role = JwtUtil.getRoleIdFromToken();
+            if (role != null && role == ADMIN_ROLE_ID) {
+                accountPauseStore.remove(id);
+            }
+        } catch (Exception e) {
+            // 没有请求上下文(不该发生:能走到这里说明 changeForwardStatus 已经取到过令牌),不动账本
+        }
     }
 
     @Override

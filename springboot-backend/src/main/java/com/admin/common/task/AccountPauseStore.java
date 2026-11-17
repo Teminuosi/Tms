@@ -71,8 +71,15 @@ public class AccountPauseStore {
                     + "`fwd_created` BIGINT DEFAULT NULL, "
                     + "`reason` VARCHAR(16) NOT NULL, "
                     + "`created_time` BIGINT NOT NULL, "
+                    + "`retry_since` BIGINT DEFAULT NULL, "
                     + "KEY `idx_ap_user` (`user_id`)"
                     + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账号总闸(到期/停用/总流量)停掉的转发,账号放开后只恢复这些'");
+            try {
+                // 本分支早期的测试库里建过不带这一列的表
+                st.executeUpdate("ALTER TABLE `account_pause` ADD COLUMN `retry_since` BIGINT DEFAULT NULL");
+            } catch (Exception ignore) {
+                // 已经有了
+            }
             st.executeUpdate("DELETE FROM `account_pause` WHERE `forward_id` NOT IN (SELECT `id` FROM `forward`)");
         } catch (Exception e) {
             log.warn("account_pause 表不可用,账号放开后不会自动恢复转发: {}", e.getMessage());
@@ -140,6 +147,39 @@ public class AccountPauseStore {
 
     public void removeByUser(long userId) {
         exec("DELETE FROM `account_pause` WHERE `user_id` = ?", userId);
+    }
+
+    /** 账号又被挡住时清掉失败计时 */
+    public void clearRetrying(long userId) {
+        exec("UPDATE `account_pause` SET `retry_since` = NULL WHERE `user_id` = ? AND `retry_since` IS NOT NULL", userId);
+    }
+
+    /** 账号已放开、这条却恢复失败:记下第一次失败的时间(之后不再改) */
+    public void markRetrying(long forwardId) {
+        try (Connection conn = dataSource.getConnection(); PreparedStatement ps = conn.prepareStatement(
+                "UPDATE `account_pause` SET `retry_since` = ? WHERE `forward_id` = ? AND `retry_since` IS NULL")) {
+            ps.setLong(1, System.currentTimeMillis());
+            ps.setLong(2, forwardId);
+            ps.executeUpdate();
+        } catch (Exception e) {
+            log.debug("改 account_pause 失败({}): {}", forwardId, e.getMessage());
+        }
+    }
+
+    /**
+     * 兜底:账号放开以后连续恢复失败超过 maxAgeMs 的记录删掉,免得永远重试。
+     * 只看 retry_since(账号放开后才开始算),账号一直被挡着的记录不受影响 —— 停了两个月再续费也照样拉得回来。
+     * @return 删掉的条数
+     */
+    public int dropStaleRetries(long maxAgeMs) {
+        try (Connection conn = dataSource.getConnection(); PreparedStatement ps = conn.prepareStatement(
+                "DELETE FROM `account_pause` WHERE `retry_since` IS NOT NULL AND `retry_since` < ?")) {
+            ps.setLong(1, System.currentTimeMillis() - maxAgeMs);
+            return ps.executeUpdate();
+        } catch (Exception e) {
+            log.debug("清 account_pause 失败: {}", e.getMessage());
+            return 0;
+        }
     }
 
     private void exec(String sql, long arg) {

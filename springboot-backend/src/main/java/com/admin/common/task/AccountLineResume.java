@@ -73,16 +73,47 @@ public class AccountLineResume {
 
     private static final long BYTES_TO_GB = 1024L * 1024L * 1024L;
 
-    /** 车主操作触发:失败原因记 info */
+    /**
+     * 定时补恢复每一轮的上限:CheckExpiryAsync 和到期巡检共用一个调度线程,一轮里最多试 maxForwards 条、
+     * 最多花 maxMs,用完就停,剩下的下一轮接着来。
+     */
+    public static final class Budget {
+        private int left;
+        private final long deadline;
+
+        public Budget(int maxForwards, long maxMs) {
+            this.left = maxForwards;
+            this.deadline = System.currentTimeMillis() + maxMs;
+        }
+
+        boolean take() {
+            if (exhausted()) {
+                return false;
+            }
+            left--;
+            return true;
+        }
+
+        public boolean exhausted() {
+            return left <= 0 || System.currentTimeMillis() > deadline;
+        }
+    }
+
+    /** 车主操作触发:失败原因记 info,不限条数 */
     public int resumeIfAccountOk(Long userId) {
-        return resumeIfAccountOk(userId, true);
+        return resumeIfAccountOk(userId, true, null);
+    }
+
+    public int resumeIfAccountOk(Long userId, boolean loud) {
+        return resumeIfAccountOk(userId, loud, null);
     }
 
     /**
-     * @param loud false = 定时补恢复,失败只打 debug
+     * @param loud   false = 定时补恢复,失败只打 debug
+     * @param budget 定时补恢复的每轮上限;null = 不限
      * @return 实际拉起来的转发条数
      */
-    public int resumeIfAccountOk(Long userId, boolean loud) {
+    public int resumeIfAccountOk(Long userId, boolean loud, Budget budget) {
         if (userId == null) {
             return 0;
         }
@@ -94,6 +125,8 @@ public class AccountLineResume {
             }
             long now = System.currentTimeMillis();
             if (AccountLimits.accountBlocked(u, now)) {
+                // 账号又被挡住了:「放开后连续失败多久」从下次放开重新算,别让 7 天兜底误删
+                accountPauseStore.clearRetrying(userId);
                 return 0;
             }
             List<AccountPauseStore.Rec> recs = accountPauseStore.listByUser(userId);
@@ -132,6 +165,9 @@ public class AccountLineResume {
                     accountPauseStore.remove(rec.forwardId); // 隧道权限自己该停,交给隧道权限的逻辑
                     continue;
                 }
+                if (budget != null && !budget.take()) {
+                    break; // 这一轮额度用完,下一轮接着
+                }
                 try {
                     R r = forwardService.resumeForwardAsSystem(f.getId());
                     if (r != null && r.getCode() == 0) {
@@ -141,6 +177,8 @@ public class AccountLineResume {
                         String msg = r == null ? null : r.getMsg();
                         if (permanentFailure(msg)) {
                             accountPauseStore.remove(rec.forwardId);
+                        } else {
+                            accountPauseStore.markRetrying(rec.forwardId);
                         }
                         if (loud) {
                             log.info("账号放开后恢复转发[{}]没成: {}", f.getId(), msg);
@@ -149,6 +187,7 @@ public class AccountLineResume {
                         }
                     }
                 } catch (Exception e) {
+                    accountPauseStore.markRetrying(rec.forwardId);
                     if (loud) {
                         log.warn("账号放开后恢复转发[{}]失败: {}", f.getId(), e.getMessage());
                     } else {
@@ -236,12 +275,17 @@ public class AccountLineResume {
         return used >= flow * BYTES_TO_GB; // 老路径对隧道权限就是 >=,0 也算停
     }
 
-    /** 再试也拉不起来的:转发自己到期、隧道停用 / 不存在、转发不存在 */
+    /**
+     * 再试也拉不起来的:转发自己到期、隧道停用 / 不存在、转发不存在、入口 / 出口节点被删了、
+     * 节点上找不到这条服务(入口或隧道转发的远端 not found,节点重装过之类,要车主重新保存)。
+     * 节点离线 / 超时(「节点不在线」「等待响应超时」)不算,留着下一轮再试。
+     */
     static boolean permanentFailure(String msg) {
         if (msg == null) {
             return false;
         }
-        return msg.contains("已到期") || msg.contains("隧道已禁用") || msg.contains("隧道不存在") || msg.contains("转发不存在");
+        return msg.contains("已到期") || msg.contains("隧道已禁用") || msg.contains("隧道不存在") || msg.contains("转发不存在")
+                || msg.contains("节点不存在") || msg.contains("not found") || msg.contains("找不到这条转发的服务");
     }
 
     /** 这个车友每条线路(机器 × 落地)下的协议转发,key 见 key() */
