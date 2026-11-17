@@ -7,6 +7,7 @@ import com.admin.common.dto.GostConfigDto;
 import com.admin.common.lang.R;
 import com.admin.common.task.CheckGostConfigAsync;
 import com.admin.common.utils.AESCrypto;
+import com.admin.common.utils.AccountLimits;
 import com.admin.common.utils.AutoPauseSkips;
 import com.admin.common.utils.GostDeleteFallback;
 import com.admin.common.utils.GostUtil;
@@ -262,8 +263,8 @@ public class FlowController extends BaseController {
         } else if (forward != null && forward.getUserId() != null && forward.getUserId() != 0) {
             // 协议/中转的转发:userTunnelId 恒为 0(没有 user_tunnel),以前整个被跳过 → 配额从未生效。
             // 改为走【线路】检查:一条线路 = 一个套餐,流量/到期各算各的,超了只停这条。
-            // 注意:这里【不】查账号总流量——协议/中转按线路卖,不存在"账号总额度"这个概念;
-            // 但账号被停用/账号整体到期仍然全停(那是账号级开关)。
+            // 账号级总闸(账号停用 / 账号到期 / 账号总流量跑满)仍然全停 —— 账号总流量以前这里不查,
+            // 车主设了 50G 用到 70G 照样能用;2026-11-17 起也算(flow 0 = 不限,见 AccountLimits)。
             checkLineRelatedLimits(forward, userId);
             checkUserAccountLimits(userId, name);
         }
@@ -272,8 +273,10 @@ public class FlowController extends BaseController {
     }
 
     /**
-     * 协议/中转的账号级检查:只看账号是否被停用、账号是否整体到期(那是账号级开关,到了就全停)。
-     * 【不查账号总流量】——协议/中转按线路卖,流量由每条线路自己的配额管。
+     * 协议/中转的账号级检查:账号被停用、账号整体到期、账号总流量跑满 → 这个人名下全停(账号级总闸)。
+     * 账号总流量:flow 为 0 / 空 = 不限(和老的隧道权限路径 checkUserRelatedLimits 把 0 当「停」不同,那条不动);
+     * 管理员自己不按账号总流量停。线路自己的配额仍由 checkLineRelatedLimits 管。
+     * 账号放开后(车主改车友 / 清零 / 每月重置)由 AccountLineResume 把因账号停掉的线路拉起来。
      */
     private void checkUserAccountLimits(String userId, String name) {
         User u = userService.getById(userId);
@@ -285,6 +288,11 @@ public class FlowController extends BaseController {
             return;
         }
         if (u.getStatus() != null && u.getStatus() != 1) {
+            pauseAllUserServices(userId, name);
+            return;
+        }
+        if (AccountLimits.accountFlowExceeded(u)) {
+            log.info("账号[{}]总流量已跑满({} GB),停该账号所有转发", u.getUser(), u.getFlow());
             pauseAllUserServices(userId, name);
         }
     }
