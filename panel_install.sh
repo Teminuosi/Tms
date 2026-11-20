@@ -18,11 +18,11 @@ TMS_IPV6="${TMS_IPV6:-0}"
 # 而那个 release 里没有 compose 和 gost.sql —— 于是这里会下到 9 字节的 "Not Found",
 # 把 docker-compose.yml 覆盖成垃圾、面板直接起不来(踩过)。
 # raw main 永远是仓库当前内容,不受发版影响。
-DOCKER_COMPOSEV4_URL="https://raw.githubusercontent.com/Teminuosi/Tms/main/docker-compose-v4.yml"
-DOCKER_COMPOSEV6_URL="https://raw.githubusercontent.com/Teminuosi/Tms/main/docker-compose-v6.yml"
-GOST_SQL_URL="https://raw.githubusercontent.com/Teminuosi/Tms/main/gost.sql"
+DOCKER_COMPOSEV4_URL="https://raw.githubusercontent.com/Heiyukeji/Tms/main/docker-compose-v4.yml"
+DOCKER_COMPOSEV6_URL="https://raw.githubusercontent.com/Heiyukeji/Tms/main/docker-compose-v6.yml"
+GOST_SQL_URL="https://raw.githubusercontent.com/Heiyukeji/Tms/main/gost.sql"
 # 管理脚本自身的 raw 地址(curl|bash 场景下 tms 命令的兜底下载源)
-PANEL_INSTALL_RAW_URL="https://raw.githubusercontent.com/Teminuosi/Tms/main/panel_install.sh"
+PANEL_INSTALL_RAW_URL="https://raw.githubusercontent.com/Heiyukeji/Tms/main/panel_install.sh"
 
 COUNTRY=$(curl -s --max-time 5 https://ipinfo.io/country || true)
 if [ "$COUNTRY" = "CN" ]; then
@@ -240,7 +240,7 @@ print_access_box() {
   echo ""
   echo "  ──────────────────────────────────────────────────────"
   echo "    管理面板 :  输入  tms  (更新/卸载/彻底清理/查看状态)"
-  echo "    项目地址 :  https://github.com/Teminuosi/Tms"
+  echo "    项目地址 :  https://github.com/Heiyukeji/Tms"
   echo "  ──────────────────────────────────────────────────────"
   echo ""
 }
@@ -330,7 +330,7 @@ show_access_info() {
 # purge 里的 `down -v --rmi all` 和 `rm .env` 杀伤力很大,在别人的项目目录里
 # 跑一下能把人家的容器、数据卷、镜像连同 .env 一锅端 —— 认准了再动手。
 is_tms_compose() {
-  [ -f docker-compose.yml ] && grep -q "teminuosi\|gost-mysql" docker-compose.yml
+  [ -f docker-compose.yml ] && grep -q "Heiyukeji\|gost-mysql" docker-compose.yml
 }
 
 purge_panel() {
@@ -365,7 +365,7 @@ purge_panel() {
     docker volume rm mysql_data backend_logs tms_caddy_data tms_caddy_config 2>/dev/null || true
     docker volume ls -q 2>/dev/null       | grep -E '(^|_)(mysql_data|backend_logs|tms_caddy_data|tms_caddy_config)$'       | xargs -r docker volume rm 2>/dev/null || true
     docker network rm gost-network 2>/dev/null || true
-    docker rmi -f ghcr.io/teminuosi/springboot-backend:latest ghcr.io/teminuosi/vite-frontend:latest mysql:5.7 2>/dev/null || true
+    docker rmi -f ghcr.io/Heiyukeji/springboot-backend:latest ghcr.io/Heiyukeji/vite-frontend:latest mysql:5.7 2>/dev/null || true
     # 只清悬空镜像(不动其他应用),回收磁盘
     docker image prune -f 2>/dev/null || true
   fi
