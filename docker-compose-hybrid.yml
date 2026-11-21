@@ -1,0 +1,112 @@
+# 【源码编译版(合体部署)老用户兼容,2026-11-20 起】
+# 面板源码不再公开。源码编译版的 tms update 会把面板目录同步成公开仓库、再按本文件启动;
+# 所以这里不再从源码编译:前后端的 build 改成 hybrid/ 下各一行的 Dockerfile(FROM 官方镜像),
+# build.pull 让 tms update(up -d --build)每次都去拉最新官方镜像;tms start / restart 不联网、不拉。
+# (不用 pull_policy: always:那样 tms start 每次都要连镜像仓库,国内机连不上就起不来)
+# 和原来的源码编译版只差 build 这两段:镜像名 tms-*:hybrid、容器名、数据卷 mysql_data、网络、端口、.env 都不变,数据库数据原样保留。
+# 新装面板请用 panel_install.sh。
+
+services:
+  mysql:
+    image: mysql:5.7
+    container_name: gost-mysql
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # gost.sql 已包含全部 hybrid 表(协议/中转/线路),不要再挂 hybrid-schema-*.sql,
+      # 否则里面的 ALTER TABLE 会二次执行报 1060,导致 MySQL 初始化中断。
+      # 那三个文件保留着,供【已有旧库】单独执行升级用。
+      - ./gost.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --max_connections=1000
+      --innodb_buffer_pool_size=256M
+    networks:
+      - gost-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 10s
+      retries: 10
+
+  backend:
+    build:
+      context: ./hybrid/backend
+      pull: true
+    image: tms-backend:hybrid
+    container_name: springboot-backend
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    restart: unless-stopped
+    environment:
+      DB_HOST: mysql
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      LOG_DIR: /app/logs
+      JAVA_OPTS: "-Xms256m -Xmx512m -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
+    ports:
+      - "${BACKEND_PORT}:6365"
+    volumes:
+      - backend_logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - gost-network
+
+  frontend:
+    build:
+      context: ./hybrid/frontend
+      pull: true
+    image: tms-frontend:hybrid
+    container_name: vite-frontend
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT}:80"
+    depends_on:
+      - backend
+    networks:
+      - gost-network
+
+volumes:
+  mysql_data:
+    name: mysql_data
+    driver: local
+  backend_logs:
+    name: backend_logs
+    driver: local
+
+networks:
+  gost-network:
+    name: gost-network
+    driver: bridge
+
+# --- .env 示例(存成同目录 .env)---
+# DB_NAME=gost
+# DB_USER=gost
+# DB_PASSWORD=换个强密码
+# JWT_SECRET=换一串随机长字符串
+# BACKEND_PORT=6365
+# FRONTEND_PORT=6366

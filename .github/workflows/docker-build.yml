@@ -1,0 +1,145 @@
+name: Build and Push Images
+
+# 【2026-11-20 起源码不公开】
+# 源码在私有仓库(仓库变量 SRC_REPO,正式 = Teminuosi/tms-panel-src);本仓库只放安装文件、构建流程和 SOURCE_REF。
+# 源码那边跑 tools/publish-public.sh:把安装文件同步过来、SOURCE_REF 写成要发的源码提交号、推 main → 触发这里。
+# 这里按 SOURCE_REF 用只读部署密钥(secrets.TMS_SRC_DEPLOY_KEY)去私有仓库取源码,构建并推 :latest。
+#
+# BUILD_COMMIT 用的是【本仓库】这次提交的号(GITHUB_SHA),不是源码的号:
+# 面板「检查更新」(VersionController)查的是本仓库 main 最近一次成功构建的 head_sha,两边要对得上,
+# 已经装好的老面板才能照常提示更新。
+#
+# 和闭源前的区别:不再打 1.0.x 版本号镜像、不再往 1.0.1 Release 传文件(实测那几个文件没人下载);
+# 节点程序(gost)只走 release-gost.yml(推 gost-v* 标签),装节点用的 releases/latest 一直是它。
+#
+# 测试仓库(不是 Teminuosi/Tms)推到 tms-citest-* 镜像名,绝不碰正式镜像。
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - SOURCE_REF
+      - .github/workflows/docker-build.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+# 连着发两次时按顺序构建:不然先发的那次后跑完会把 :latest 盖回旧代码,
+# 老面板拿最新那条构建记录比,会一直提示「有更新」、更新完还是旧的
+concurrency:
+  group: docker-build
+  cancel-in-progress: false
+
+jobs:
+  build-vite:
+    name: Build & Push Vite Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读源码版本和镜像名
+        id: cfg
+        run: |
+          SHA=$(tr -d '[:space:]' < SOURCE_REF)
+          echo "$SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "SOURCE_REF 不是 40 位提交号:$SHA"; exit 1; }
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REPOSITORY" = "Teminuosi/Tms" ]; then
+            echo "image=ghcr.io/teminuosi/vite-frontend" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=ghcr.io/teminuosi/tms-citest-frontend" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 取私有源码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.SRC_REPO }}
+          ref: ${{ steps.cfg.outputs.sha }}
+          ssh-key: ${{ secrets.TMS_SRC_DEPLOY_KEY }}
+          persist-credentials: false
+          path: src
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Vite Docker image
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            -t "${{ steps.cfg.outputs.image }}:latest" \
+            ./src/vite-frontend
+
+  build-java:
+    name: Build & Push Spring Boot Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读源码版本和镜像名
+        id: cfg
+        run: |
+          SHA=$(tr -d '[:space:]' < SOURCE_REF)
+          echo "$SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "SOURCE_REF 不是 40 位提交号:$SHA"; exit 1; }
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REPOSITORY" = "Teminuosi/Tms" ]; then
+            echo "image=ghcr.io/teminuosi/springboot-backend" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=ghcr.io/teminuosi/tms-citest-backend" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 取私有源码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.SRC_REPO }}
+          ref: ${{ steps.cfg.outputs.sha }}
+          ssh-key: ${{ secrets.TMS_SRC_DEPLOY_KEY }}
+          persist-credentials: false
+          path: src
+
+      - name: Set up JDK and Maven
+        uses: actions/setup-java@v4
+        with:
+          java-version: 21
+          distribution: 'temurin'
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('src/**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Build Java JAR
+        working-directory: ./src/springboot-backend
+        run: mvn clean package -DskipTests
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Java Docker image
+        run: |
+          # 构建标识 = 本仓库这次提交的号(见文件开头说明)
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            --build-arg BUILD_COMMIT="${GITHUB_SHA:0:7}" \
+            --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t "${{ steps.cfg.outputs.image }}:latest" \
+            ./src/springboot-backend

@@ -1,0 +1,75 @@
+name: release-gost
+
+# 合体面板节点端:构建 hybrid gost(带 sing-box 支持)并发布成 release 资产,
+# 让新节点用 install.sh 一键装就自带协议能力。
+# 触发:推送 gost-v* 标签(tools/publish-public.sh --gost gost-vN 会推)。
+#
+# 【2026-11-20 起源码不公开】go-gost 源码按这个标签所在提交的 SOURCE_REF,用只读部署密钥从私有仓库(vars.SRC_REPO)取;
+# install.sh 用本仓库根目录那份(和 raw 地址给用户的是同一份)。
+
+on:
+  push:
+    tags:
+      - 'gost-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读源码版本
+        id: cfg
+        run: |
+          SHA=$(tr -d '[:space:]' < SOURCE_REF)
+          echo "$SHA" | grep -Eq '^[0-9a-f]{40}$' || { echo "SOURCE_REF 不是 40 位提交号:$SHA"; exit 1; }
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: 取私有源码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.SRC_REPO }}
+          ref: ${{ steps.cfg.outputs.sha }}
+          ssh-key: ${{ secrets.TMS_SRC_DEPLOY_KEY }}
+          persist-credentials: false
+          path: src
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go-gost/go.mod
+          cache-dependency-path: src/go-gost/go.sum
+
+      - name: Build hybrid gost (amd64 + arm64)
+        working-directory: src/go-gost
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=mod -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/dist/gost-amd64" .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=mod -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/dist/gost-arm64" .
+          cp "$GITHUB_WORKSPACE/install.sh" "$GITHUB_WORKSPACE/dist/install.sh"
+          ls -la "$GITHUB_WORKSPACE/dist"
+
+      # 先发 draft:action-gh-release 是「先建 release 再传 asset」,release 一建
+      # latest 就立刻指向新 tag,而那会儿 30MB 的二进制还在传 —— 中间这一两分钟里
+      # releases/latest/download/gost-amd64 是 404,正在装节点的人会莫名其妙地
+      # 「下载失败」,而且看不出跟发版有关。draft 期间 latest 不动,传完再一次性放出来。
+      - name: Publish release (draft first)
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            dist/gost-amd64
+            dist/gost-arm64
+            dist/install.sh
+          body: |
+            合体面板节点端 hybrid gost(内置 sing-box 下发/协议支持)。
+            新节点安装:
+            `curl -L https://github.com/Teminuosi/Tms/releases/latest/download/install.sh -o install.sh && chmod +x install.sh && ./install.sh -a http://面板IP:6365 -s 节点密钥`
+
+      # asset 全部就位后才真正发布并置为 latest,把上面那个 404 窗口彻底关掉
+      - name: Flip draft to published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
