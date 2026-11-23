@@ -49,6 +49,8 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=mod -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/dist/gost-amd64" .
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=mod -trimpath -ldflags "-s -w" -o "$GITHUB_WORKSPACE/dist/gost-arm64" .
           cp "$GITHUB_WORKSPACE/install.sh" "$GITHUB_WORKSPACE/dist/install.sh"
+          # GOST 是 MIT 许可,发二进制要附版权声明(2026-11-21)
+          cp "$GITHUB_WORKSPACE/THIRD-PARTY-NOTICES.md" "$GITHUB_WORKSPACE/dist/THIRD-PARTY-NOTICES.md"
           ls -la "$GITHUB_WORKSPACE/dist"
 
       # 先发 draft:action-gh-release 是「先建 release 再传 asset」,release 一建
@@ -63,6 +65,7 @@ jobs:
             dist/gost-amd64
             dist/gost-arm64
             dist/install.sh
+            dist/THIRD-PARTY-NOTICES.md
           body: |
             合体面板节点端 hybrid gost(内置 sing-box 下发/协议支持)。
             新节点安装:
